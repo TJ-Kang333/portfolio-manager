@@ -7,7 +7,27 @@
 
 const SHEET_NAME = 'state';
 const TXN_SHEET  = '가계부거래';
+const META_SHEET = 'meta';
 const CHUNK_SIZE = 45000; // 셀당 최대 45,000자
+
+// ── 리비전(동기화 충돌 감지용) ────────────────────────────
+// meta 시트 B1 에 정수 하나. 저장 성공 시마다 +1.
+function getMetaSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(META_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(META_SHEET);
+    sh.getRange('A1').setValue('rev');
+    sh.getRange('B1').setValue(0);
+  }
+  return sh;
+}
+function getRev() {
+  return parseInt(getMetaSheet().getRange('B1').getValue()) || 0;
+}
+function setRev(n) {
+  getMetaSheet().getRange('B1').setValue(n);
+}
 
 function getStateSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -111,7 +131,8 @@ function formatDateVal(val) {
 function doGet(e) {
   try {
     const action = (e && e.parameter && e.parameter.action) || 'load';
-    if (action === 'load')            return makeResponse({ ok: true, state: loadState() });
+    if (action === 'load')            return makeResponse({ ok: true, state: loadState(), rev: getRev() });
+    if (action === 'rev')             return makeResponse({ ok: true, rev: getRev() });
     if (action === 'load_email_txns') return loadEmailTxns();
     return makeResponse({ ok: false, error: '알 수 없는 action' });
   } catch(err) {
@@ -121,31 +142,50 @@ function doGet(e) {
 
 function doPost(e) {
   try {
-    let body  = null;
-    let state = null;
+    let body    = null;
+    let state   = null;
+    let baseRev = null; // 클라이언트가 마지막으로 알던 rev (없으면 구버전 클라이언트)
     if (e.postData && e.postData.contents) {
       const raw = e.postData.contents;
       try { body = JSON.parse(raw); } catch(err) {}
     }
     if (body) {
       if (body.action === 'mark_email_done') return markEmailDone(body.rowIndices);
-      if (body.state)                        state = body.state;
+      if (body.state)              state = body.state;
+      if (body.baseRev != null)    baseRev = parseInt(body.baseRev);
     }
     if (!state && e.parameter) {
       if (e.parameter.payload) {
         try {
           const b = JSON.parse(e.parameter.payload);
           if (b.action === 'mark_email_done') return markEmailDone(b.rowIndices);
-          if (b.state) state = b.state;
+          if (b.state)           state = b.state;
+          if (b.baseRev != null) baseRev = parseInt(b.baseRev);
         } catch(err) {}
       }
       if (!state && e.parameter.state) {
         try { state = JSON.parse(e.parameter.state); } catch(err) {}
       }
+      if (baseRev == null && e.parameter.baseRev != null) baseRev = parseInt(e.parameter.baseRev);
     }
     if (state) {
-      saveState(state);
-      return makeResponse({ ok: true });
+      // 동시 저장 직렬화 — rev 확인과 쓰기가 겹치지 않게
+      const lock = LockService.getScriptLock();
+      try { lock.waitLock(30000); }
+      catch(err) { return makeResponse({ ok: false, error: '다른 저장이 진행 중입니다. 잠시 후 재시도.' }); }
+      try {
+        const cur = getRev();
+        // baseRev 를 보낸 클라이언트만 충돌 검사. 구버전(미전송)은 그대로 통과.
+        if (baseRev != null && !isNaN(baseRev) && baseRev !== cur) {
+          return makeResponse({ ok: false, conflict: true, rev: cur, state: loadState() });
+        }
+        saveState(state);
+        const next = cur + 1;
+        setRev(next);
+        return makeResponse({ ok: true, rev: next });
+      } finally {
+        lock.releaseLock();
+      }
     }
     return makeResponse({ ok: false, error: '저장할 state를 찾지 못했습니다.' });
   } catch(err) {

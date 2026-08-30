@@ -1065,6 +1065,14 @@ let S = {
 
 // ── PERSIST ────────────────────────────────────────────────
 let GAS_URL = localStorage.getItem('pf_gas_url') || '';
+// 동기화 리비전: 마지막으로 서버에서 받거나 서버에 저장한 시점의 번호.
+// 저장 시 이 값을 함께 보내 서버가 그동안 다른 기기에서 바뀌었는지 판단한다.
+let _baseRev = parseInt(localStorage.getItem('pf_rev') || '0') || 0;
+function setBaseRev(n) {
+  if (n == null || isNaN(n)) return;
+  _baseRev = n;
+  try { localStorage.setItem('pf_rev', String(n)); } catch(e) {}
+}
 function migratePersonalTxns() {
   const ld = ledger();
   // 카테고리명에서 공백 제거 후 '개인용도' 포함 여부로 판단
@@ -1112,6 +1120,7 @@ async function loadFromSheets() {
     const data = await gasRequest(GAS_URL + '?action=load', { mode:'cors' });
     if (!data.ok) throw new Error(data.error);
     if (data.state) Object.assign(S, data.state);
+    if (data.rev != null) setBaseRev(data.rev);
     migratePersonalTxns();
     saveLocal();
     setSyncStatus('ok','Sheets에서 불러옴');
@@ -1122,24 +1131,108 @@ async function loadFromSheets() {
   }
 }
 
-// ── 자동 저장 (디바운스 + 실패 시 재시도) ──────────────────
+// ── 병합 헬퍼 ─────────────────────────────────────────────
+// 원칙: 저장을 시도하는 쪽(=지금 이 기기)이 충돌 시 우선.
+// 단, 다른 기기가 "새로 추가한" 항목은 절대 버리지 않고 합친다(union).
+// 삭제 동기화는 Phase 1 범위 밖 — 드물게 삭제한 항목이 되살아날 수 있음(추후 tombstone 처리).
+function _mergeById(localArr, serverArr) {
+  const out = Array.isArray(localArr) ? localArr.slice() : [];
+  const have = new Set(out.map(x => x && x.id).filter(Boolean));
+  let added = 0;
+  (Array.isArray(serverArr) ? serverArr : []).forEach(x => {
+    if (x && x.id && !have.has(x.id)) { out.push(x); have.add(x.id); added++; }
+  });
+  return { arr: out, added };
+}
+function _mergeMap(localObj, serverObj) {
+  const l = localObj || {}, s = serverObj || {};
+  const out = Object.assign({}, s, l); // 로컬 우선
+  let added = 0;
+  for (const k in s) if (!(k in l)) added++;
+  return { obj: out, added };
+}
+function _mergeMonths(localM, serverM) {
+  const out = localM ? JSON.parse(JSON.stringify(localM)) : {};
+  const s = serverM || {};
+  let added = 0;
+  for (const m in s) {
+    if (!out[m]) { out[m] = JSON.parse(JSON.stringify(s[m])); added++; continue; }
+    for (const acct in s[m]) {
+      if (!out[m][acct]) { out[m][acct] = JSON.parse(JSON.stringify(s[m][acct])); added++; continue; }
+      for (const tk in s[m][acct]) {
+        if (!(tk in out[m][acct])) { out[m][acct][tk] = s[m][acct][tk]; added++; }
+      }
+    }
+  }
+  return { obj: out, added };
+}
+// 서버 상태의 "추가분"을 현재 S에 접어넣는다. S를 직접 수정. {merged, notes} 반환.
+function mergeServerInto(server) {
+  if (!server || typeof server !== 'object') return { merged: 0, notes: [] };
+  let merged = 0; const notes = [];
+  const bump = (n, label) => { if (n) { merged += n; if (label) notes.push(`${label} ${n}`); } };
+
+  S.ledger = S.ledger || { accounts: [], categories: [], txns: [] };
+  const sl = server.ledger || {};
+  { const r = _mergeById(S.ledger.txns, sl.txns);       S.ledger.txns = r.arr;       bump(r.added, '거래'); }
+  { const r = _mergeById(S.ledger.accounts, sl.accounts); S.ledger.accounts = r.arr; bump(r.added, '가계부계좌'); }
+  { const r = _mergeById(S.ledger.categories, sl.categories); S.ledger.categories = r.arr; bump(r.added, '카테고리'); }
+
+  { const r = _mergeMap(S.cryptoEntries, server.cryptoEntries); S.cryptoEntries = r.obj; bump(r.added, '암호화폐'); }
+  { const r = _mergeMap(S.deposits, server.deposits);           S.deposits = r.obj;      bump(r.added, ''); }
+  { const r = _mergeMonths(S.months, server.months);            S.months = r.obj;        bump(r.added, '월별잔고'); }
+  { const r = _mergeById(S.accounts, server.accounts);          S.accounts = r.arr;      bump(r.added, '계좌'); }
+  { const r = _mergeById(S.portfolios, server.portfolios);      S.portfolios = r.arr;    bump(r.added, '포트폴리오'); }
+  { const r = _mergeMap(S.tickerMap, server.tickerMap);         S.tickerMap = r.obj; }
+  if (Array.isArray(server.assets)) {
+    const r = _mergeById(S.assets, server.assets);              S.assets = r.arr;        bump(r.added, '자산군');
+  }
+  return { merged, notes };
+}
+// 병합 대상이 아닌(스칼라·설정) 키만 서버값으로 채택
+const _MERGE_KEYS = ['ledger','months','cryptoEntries','deposits','accounts','portfolios','tickerMap','assets'];
+function adoptServerScalars(server) {
+  if (!server) return;
+  Object.keys(server).forEach(k => { if (!_MERGE_KEYS.includes(k)) S[k] = server[k]; });
+}
+
+// ── 자동 저장 (디바운스 + 충돌 감지 + 실패 시 재시도) ──────
 let _saveTimer = null;
+let _saveScheduled = false;
 let _pendingSave = false;
 let _saveRetryCount = 0;
+let _saving = false; // _postState 왕복 중 — freshness 폴링이 끼어들지 않게
+
+async function _postState() {
+  return gasRequest(GAS_URL, {
+    method: 'POST', mode: 'cors',
+    body: JSON.stringify({ action:'save_all', state:S, baseRev:_baseRev }),
+    headers: { 'Content-Type': 'text/plain' },
+  });
+}
 
 async function saveToSheets() {
   saveLocal(); // 로컬은 항상 즉시 저장
   if (!GAS_URL) return;
-
   setSyncStatus('syncing', '저장 중...');
-
+  _saving = true;
   try {
-    const data = await gasRequest(GAS_URL, {
-      method: 'POST', mode: 'cors',
-      body: JSON.stringify({ action:'save_all', state:S }),
-      headers: { 'Content-Type': 'text/plain' },
-    });
-    if (!data.ok) throw new Error(data.error);
+    let data = await _postState();
+
+    // 서버가 그동안 다른 기기에서 바뀜 → 서버 추가분을 병합하고 한 번 재시도
+    if (data && data.conflict) {
+      const info = mergeServerInto(data.state);
+      adoptServerScalars(data.state);
+      if (data.rev != null) setBaseRev(data.rev);
+      saveLocal();
+      setSyncStatus('syncing', (info.merged ? `다른 기기 변경 ${info.merged}건 병합 — ` : '') + '재저장 중...');
+      data = await _postState();
+      if (data && data.conflict) throw new Error('연속 충돌 — 잠시 후 재시도');
+      if (data && data.ok && info.merged) { try { renderDashboard(); } catch(e){} }
+    }
+
+    if (!data || !data.ok) throw new Error((data && data.error) || '응답 오류');
+    if (data.rev != null) setBaseRev(data.rev);
     setSyncStatus('ok', 'Sheets 저장됨');
     setTimeout(()=>setSyncStatus('idle',''), 2000);
     _pendingSave = false; _saveRetryCount = 0;
@@ -1149,6 +1242,8 @@ async function saveToSheets() {
     const retryDelay = Math.min(5000 * _saveRetryCount, 30000);
     setSyncStatus('error', `저장 실패 — ${Math.round(retryDelay/1000)}초 후 재시도`);
     setTimeout(saveToSheets, retryDelay);
+  } finally {
+    _saving = false;
   }
 }
 
@@ -1156,9 +1251,32 @@ async function saveToSheets() {
 function save() {
   saveLocal(); // 항상 즉시 로컬 저장
   if (!GAS_URL) return;
+  _saveScheduled = true;
   clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(saveToSheets, 500);
+  _saveTimer = setTimeout(() => { _saveScheduled = false; saveToSheets(); }, 500);
 }
+
+// ── 다른 기기 변경 감지 (탭 활성화 시 + 주기적 폴링) ────────
+async function checkFreshness() {
+  if (!GAS_URL || _pendingSave || _saveScheduled || _saving || document.hidden) return;
+  try {
+    const r = await gasRequest(GAS_URL + '?action=rev', { mode:'cors' });
+    if (!(r && r.ok && r.rev != null && r.rev > _baseRev)) return;
+    setSyncStatus('syncing', '다른 기기 변경 감지 — 불러오는 중...');
+    const d = await gasRequest(GAS_URL + '?action=load', { mode:'cors' });
+    if (!(d && d.ok && d.state)) return;
+    mergeServerInto(d.state);      // 혹시 있을 로컬 추가분은 보존
+    adoptServerScalars(d.state);   // 설정류는 서버값 채택
+    if (d.rev != null) setBaseRev(d.rev);
+    saveLocal();
+    setSyncStatus('ok', '다른 기기 변경 반영됨');
+    setTimeout(()=>setSyncStatus('idle',''), 2500);
+    try { renderDashboard(); } catch(e){}
+  } catch(e) { /* 네트워크 실패는 조용히 무시 */ }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkFreshness(); });
+window.addEventListener('focus', checkFreshness);
+setInterval(checkFreshness, 90000);
 
 // 페이지 닫힐 때 미저장 데이터 경고
 window.addEventListener('beforeunload', e => {
