@@ -8,7 +8,7 @@
 ```
 결제 → 카드 SMS / 결제앱 push
      → 폰의 MacroDroid (SMS 수신 트리거 + 알림 수신 트리거)
-     → 제목 [FINALERT] 메일로 본인 Gmail 전송
+     → 제목에 FINALERT 든 메일로 "시트 소유 계정" Gmail 전송
      → Gmail 필터가 라벨 'finalert' 부여
      → Apps Script parseFinanceAlerts() 5분 트리거
      → 파싱 후 '가계부거래' 시트에 append (해시로 중복 방지)
@@ -34,10 +34,11 @@
 ### 사용자가 할 것
 1. `email_parser.gs`를 기존 Apps Script 프로젝트에 **새 파일로** 추가 → 저장.
 2. 편집기에서 `setupFinanceAlertTrigger` 실행 → Gmail 권한 승인.
-3. 폰에 **MacroDroid** 설치 후 매크로 2개:
-   - 매크로 A: 트리거 `SMS 수신` → 동작 `이메일 보내기` (받는사람=본인 Gmail, 제목=`[FINALERT] 카드`, 본문=매직텍스트 `[sms_message]`).
-   - 매크로 B: 트리거 `알림 수신` → 앱 `경기지역화폐` → 동작 `이메일 보내기` (제목=`[FINALERT] 지역화폐`, 본문=`[notification_title] / [notification_message]`).
-4. Gmail 필터: 검색 `subject:([FINALERT])` → `라벨 적용: finalert` (읽음처리 X). 라벨은 처음 한 번 직접 만들어야 할 수도 있음.
+3. 폰에 **MacroDroid** 설치 후 매크로 2개 (받는사람 = **구글 시트를 소유한 Gmail 계정**):
+   - 매크로 A: 트리거 `SMS 수신` → 동작 `이메일 보내기` (제목=`FINALERT 카드`, 본문=매직텍스트 `{sms_message}`).
+   - 매크로 B: 트리거 `알림 수신` → 앱 `경기지역화폐` → 동작 `이메일 보내기` (제목=`FINALERT 지역화폐`, 본문=`{notification_title}` 줄바꿈 `{notification_message}`).
+   - ※ 제목에 대괄호 `[ ]` 쓰지 말 것 (MacroDroid가 변수로 오해). MacroDroid, 경기지역화폐 앱 둘 다 배터리 최적화 해제.
+4. Gmail 필터: 검색 `subject:FINALERT` → `라벨 적용: finalert` (읽음처리 X). 라벨은 처음 한 번 직접 만들어야 할 수도 있음.
 5. 카드 한 번 긁고 → 5분 뒤 스프레드시트 `가계부거래`에 행이 생기는지 확인 → 앱에서 "미반영 거래 가져오기".
 6. 경기지역화폐로 소액 결제 후, 그 앱 알림 문구를 캡처해서 전달 (파서 작성용).
 

@@ -9,8 +9,9 @@
 //   3) 이후 5분마다 parseFinanceAlerts 가 자동 실행됨.
 //
 //  전제: 폰의 MacroDroid 가 카드 문자 / 결제앱 알림을
-//        제목에 [FINALERT] 가 든 메일로 본인 Gmail 에 보내고,
-//        Gmail 필터가 그 메일에 라벨 'finalert' 를 붙인다.
+//        제목에 FINALERT (대괄호 없이) 가 든 메일로 본인 Gmail 에 보내고,
+//        Gmail 필터(subject:FINALERT)가 그 메일에 라벨 'finalert' 를 붙인다.
+//        받는 Gmail 은 반드시 이 스프레드시트를 소유한 계정이어야 함.
 // ============================================================
 
 const ALERT_LABEL        = 'finalert';         // 수집 대기
