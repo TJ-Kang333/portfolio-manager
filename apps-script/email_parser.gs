@@ -50,6 +50,7 @@ function parseFinanceAlerts() {
         const text = extractAlertText(msg);
         if (!text) return;
         const rec = parseAlert(text, msg.getDate());
+        if (rec && rec.skip) return;      // 인식했으나 기록 대상 아님(결제 실패 등)
         if (!rec) { anyFail = true; return; }
         if (hashes.has(rec.hash)) return; // 중복 스킵
         sheet.appendRow([rec.date, rec.type, rec.merchant, rec.amount, rec.source, rec.raw, rec.hash, '']);
@@ -91,6 +92,7 @@ function parseAlert(text, msgDate) {
   for (const p of ALERT_PARSERS) {
     if (!p.match(text)) continue;
     const r = p.parse(text, msgDate);
+    if (r && r.skip) return { skip: true }; // 인식은 됨, 거래로 기록하진 않음
     if (r && r.amount > 0 && r.date) {
       r.source = r.source || p.name;
       r.raw    = text.slice(0, 500);
@@ -159,12 +161,50 @@ const ALERT_PARSERS = [
     }
   },
 
-  // ── 경기지역화폐 (앱 알림) — 샘플 확보 후 작성 ─────────
-  // {
-  //   name: '경기지역화폐',
-  //   match: t => /지역화폐/.test(t),
-  //   parse: (t, msgDate) => { ... }
-  // },
+  // ── 경기지역화폐 / OO사랑화폐 (앱 푸시 알림) ────────────
+  //  결제 완료 1,100원
+  //  씨유(CU) 광명역푸르지오점
+  //  광명사랑화폐 추가형인센티브 100원
+  //  광명사랑화폐(통합) 총 보유 잔액 631,085원
+  //  (결제 실패 알림은 무시. 푸시 본문에 날짜가 없으면 메일 수신시각 사용)
+  {
+    name: '경기지역화폐',
+    match: t => /(경기지역화폐|지역화폐|사랑화폐)/.test(t) && /결제/.test(t),
+    parse: (t, msgDate) => {
+      if (/결제\s*실패/.test(t)) return { skip: true }; // 거래 아님
+      const isCancel = /(결제\s*취소|취소\s*완료|승인\s*취소|환불)/.test(t);
+      const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
+
+      // 금액: '결제 완료/취소' 든 줄 우선, 없으면 본문 첫 'N원'
+      const headLine = lines.find(l => /결제\s*(완료|취소)/.test(l));
+      const am = (headLine || t).match(/([\d,]+)\s*원/);
+      const amount = am ? parseInt(am[1].replace(/,/g, ''), 10) : 0;
+
+      // 가맹점: 보일러플레이트(사랑화폐/잔액/인센티브/결제상태/날짜/[..]) 아닌 첫 줄
+      let merchant = '';
+      for (const l of lines) {
+        if (/결제\s*(완료|취소|실패|승인)/.test(l)) continue;
+        if (/(사랑화폐|지역화폐|인센티브|잔액|보유)/.test(l)) continue;
+        if (/^\d{4}[.\/-]\d{1,2}[.\/-]\d{1,2}/.test(l)) continue;
+        if (/^\[/.test(l)) continue;
+        if (!/[가-힣A-Za-z]/.test(l)) continue;
+        merchant = l;
+        break;
+      }
+
+      // 날짜: 본문에 YYYY/MM/DD 있으면 사용, 없으면 메일 수신시각
+      const dm = t.match(/(\d{4})[.\/-](\d{1,2})[.\/-](\d{1,2})/);
+      let date;
+      if (dm) {
+        const p = n => String(n).padStart(2, '0');
+        date = dm[1] + '-' + p(dm[2]) + '-' + p(dm[3]);
+      } else {
+        date = Utilities.formatDate(msgDate || new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+      }
+
+      return { type: isCancel ? 'income' : 'expense', amount, merchant, source: '경기지역화폐', date };
+    }
+  },
 
   // ── 하나카드 승인 SMS — 샘플 확보 후 작성 ─────────────
   // {
@@ -177,15 +217,23 @@ const ALERT_PARSERS = [
 
 // ── 편집기에서 파서 점검용 (Gmail 없이) ──────────────────
 function _testParser() {
-  const sample = [
-    '[Web발신]',
-    '현대카드 MX Black 승인',
-    '강*준',
-    '24,800원 일시불',
-    '03/05 19:40',
-    '네이버페이',
-    '누적2,930,149원',
-  ].join('\n');
-  const r = parseAlert(sample, new Date(2026, 2, 5));
-  Logger.log(JSON.stringify(r, null, 2));
+  const cases = {
+    현대카드: [
+      '[Web발신]', '현대카드 MX Black 승인', '강*준',
+      '24,800원 일시불', '03/05 19:40', '네이버페이', '누적2,930,149원',
+    ].join('\n'),
+    지역화폐_완료: [
+      '결제 완료 1,100원', '씨유(CU) 광명역푸르지오점',
+      '광명사랑화폐 추가형인센티브 100원',
+      '광명사랑화폐(통합) 총 보유 잔액 631,085원',
+      '2026/09/01 16:44',
+    ].join('\n'),
+    지역화폐_실패: [
+      '결제 실패 12,000원', '경기지역화폐 결제를 지원하지 않는 매장이에요',
+      '2026/09/01 13:53',
+    ].join('\n'),
+  };
+  Object.keys(cases).forEach(k => {
+    Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1))));
+  });
 }
