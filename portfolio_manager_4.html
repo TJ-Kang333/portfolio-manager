@@ -1060,6 +1060,7 @@ let S = {
     accounts: [],   // [{id,name,type,color,balance}]  type: bank|card|cash|etc
     categories: [], // [{id,name,type,color}]  type: income|expense
     txns: [],       // [{id,date,type,catId,acctId,toAcctId,amount,memo,imported}]
+    emailAcctMap: {}, // 출처(현대카드/경기지역화폐/…) → 가계부 계좌id. 반영할 때 학습됨
   },
 };
 
@@ -5642,12 +5643,22 @@ function showEmailPreview(rows) {
     </tbody></table></div>`;
 
   const defaultAcct = document.getElementById('l-email-acct')?.value;
+  const acctMap = ld.emailAcctMap || {};
   rows.forEach((r,i)=>{
     const type=r.type||(r.amount<0?'income':'expense');
     const catSel=document.getElementById(`l-email-cat-${i}`);
     if (catSel) { const g=autoGuessCatId(r.merchant||'',type); if(g) catSel.value=g; }
     const acctSel=document.getElementById(`l-email-acct-sel-${i}`);
-    if (acctSel&&defaultAcct) acctSel.value=defaultAcct;
+    if (acctSel) {
+      // ① 출처별로 학습된 매핑 → ② 출처와 이름이 겹치는 계좌 → ③ 기본 계좌
+      const mapped = r.source && acctMap[r.source] &&
+        ld.accounts.some(a=>a.id===acctMap[r.source]) ? acctMap[r.source] : '';
+      const byName = !mapped && r.source
+        ? (ld.accounts.find(a=>a.name && (a.name.includes(r.source)||r.source.includes(a.name)))||{}).id
+        : '';
+      const pick = mapped || byName || defaultAcct;
+      if (pick) acctSel.value = pick;
+    }
   });
 }
 
@@ -5668,6 +5679,8 @@ function applyEmailTxns() {
       toAcctId:null, amount, memo:r.merchant||'', imported:true, fromEmail:true,
     });
     updateLedgerAcctBalance(acctId, type==='expense'?-amount:amount);
+    // 출처→계좌 선택을 학습 (다음 반영부터 자동 선택)
+    if (r.source) { ld.emailAcctMap = ld.emailAcctMap || {}; ld.emailAcctMap[r.source] = acctId; }
     const cat=ld.categories.find(c=>c.id===catId);
     if (cat?.name==='투자 이체'&&type==='expense') {
       const mm=r.date.slice(0,7);
@@ -6392,6 +6405,9 @@ function autoGuessCatId(memo, type) {
   const rules = [
     {keys:['편의점','마트','쿠팡','배달','식당','카페','커피','도미노','맥도날드','버거','치킨'], cat:'식비'},
     {keys:['컬리','마켓컬리'], cat:'식비'},
+    {keys:['씨유','gs25','이마트24','emart24','세븐일레븐','미니스톱','이마트','홈플러스','롯데마트'], cat:'식비'},
+    {keys:['스타벅스','starbucks','투썸','이디야','메가커피','컴포즈','빽다방','폴바셋','할리스'], cat:'식비'},
+    {keys:['배달의민족','배민','요기요','쿠팡이츠'], cat:'식비'},
     {keys:['네이버페이','naverpa'], cat:'쇼핑'},
     {keys:['지하철','버스','택시','카카오T','주유','하이패스','교통'], cat:'교통'},
     {keys:['관리비','전기','가스','수도','인터넷','통신','핸드폰','월세','임대'], cat:'주거/관리비'},
