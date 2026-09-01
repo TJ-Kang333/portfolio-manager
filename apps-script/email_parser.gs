@@ -9,9 +9,13 @@
 //   3) 이후 5분마다 parseFinanceAlerts 가 자동 실행됨.
 //
 //  전제: 폰의 MacroDroid 가 카드 문자 / 결제앱 알림을
-//        제목에 FINALERT (대괄호 없이) 가 든 메일로 본인 Gmail 에 보내고,
-//        Gmail 필터(subject:FINALERT)가 그 메일에 라벨 'finalert' 를 붙인다.
+//        제목에 FINALERT (대괄호 없이) 가 든 메일로 본인 Gmail 에 보낸다.
 //        받는 Gmail 은 반드시 이 스프레드시트를 소유한 계정이어야 함.
+//
+//  Gmail 필터(제목에 FINALERT → 라벨 finalert)는 "선택".
+//   - 만들면: 라벨 붙은 메일만 처리 (받은편지함도 깔끔).
+//   - 안 만들면: 최근 7일치 중 제목에 FINALERT 든 메일을 검색해서 처리.
+//  둘 다 처리 끝난 메일엔 finalert-done / finalert-review 라벨을 붙여 재처리 방지.
 // ============================================================
 
 const ALERT_LABEL        = 'finalert';         // 수집 대기
@@ -35,16 +39,22 @@ function parseFinanceAlerts() {
   const lock = LockService.getScriptLock();
   try { lock.waitLock(30000); } catch (e) { return; }
   try {
-    const label = GmailApp.getUserLabelByName(ALERT_LABEL);
-    if (!label) return; // 필터/라벨 아직 미설정
-
     const doneLabel   = GmailApp.getUserLabelByName(ALERT_DONE_LABEL)   || GmailApp.createLabel(ALERT_DONE_LABEL);
     const reviewLabel = GmailApp.getUserLabelByName(ALERT_REVIEW_LABEL) || GmailApp.createLabel(ALERT_REVIEW_LABEL);
+
+    // 필터로 라벨을 붙였으면 그 라벨함을, 안 만들었으면 제목 검색으로 대체
+    const label = GmailApp.getUserLabelByName(ALERT_LABEL);
+    const threads = label
+      ? label.getThreads(0, 50)
+      : GmailApp.search(
+          'subject:FINALERT newer_than:7d -label:' + ALERT_DONE_LABEL + ' -label:' + ALERT_REVIEW_LABEL,
+          0, 50);
+    if (!threads.length) return;
 
     const sheet  = getTxnSheet();
     const hashes = getExistingHashes(sheet);
 
-    label.getThreads(0, 50).forEach(thread => {
+    threads.forEach(thread => {
       let anyFail = false;
       thread.getMessages().forEach(msg => {
         const text = extractAlertText(msg);
@@ -56,7 +66,7 @@ function parseFinanceAlerts() {
         sheet.appendRow([rec.date, rec.type, rec.merchant, rec.amount, rec.source, rec.raw, rec.hash, '']);
         hashes.add(rec.hash);
       });
-      thread.removeLabel(label);
+      if (label) thread.removeLabel(label);
       thread.addLabel(anyFail ? reviewLabel : doneLabel);
     });
   } finally {
