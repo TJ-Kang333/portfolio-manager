@@ -911,12 +911,19 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
         <span style="font-size:11px;color:var(--text3);">GAS 이메일 파서가 수집한 거래 가져오기</span>
       </div>
       <div style="font-size:12px;color:var(--text2);margin-bottom:12px;line-height:1.8;">
-        GAS 이메일 파서가 카드/은행 알림 이메일을 자동으로 수집해 Sheets <code style="font-size:11px;background:var(--surface2);padding:1px 5px;border-radius:3px;">가계부거래</code> 시트에 기록합니다.<br>
-        아래 버튼으로 <b>미반영 거래</b>만 불러와 가계부에 추가합니다.
+        파서(HTTP 또는 이메일)가 수집한 카드/결제 알림을 Sheets <code style="font-size:11px;background:var(--surface2);padding:1px 5px;border-radius:3px;">가계부거래</code> 시트에서 불러옵니다.<br>
+        <b>자동 반영</b>이 켜져 있으면 계좌를 아는 거래는 앱이 열려있을 때 알아서 장부에 들어가고,
+        계좌를 모르는 것만 아래 목록에 남습니다.
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--text2);cursor:pointer;">
+          <input type="checkbox" id="l-email-autoapply" onchange="ledger().autoApplyEmail=this.checked; save();">
+          계좌를 아는 수집 거래를 자동으로 장부에 반영
+        </label>
       </div>
       <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;">
         <div class="fg" style="flex:1;min-width:140px;"><label>기본 계좌 (미매칭 거래용)</label><select id="l-email-acct"></select></div>
-        <button class="btn btn-primary" onclick="fetchEmailParsedTxns()">📥 미반영 거래 가져오기</button>
+        <button class="btn btn-primary" onclick="fetchEmailParsedTxns()">📥 지금 가져오기</button>
       </div>
       <div id="l-email-preview" style="display:none;">
         <div id="l-email-preview-content"></div>
@@ -1061,6 +1068,7 @@ let S = {
     categories: [], // [{id,name,type,color}]  type: income|expense
     txns: [],       // [{id,date,type,catId,acctId,toAcctId,amount,memo,imported}]
     emailAcctMap: {}, // 출처(현대카드/경기지역화폐/…) → 가계부 계좌id. 반영할 때 학습됨
+    autoApplyEmail: true, // 계좌를 아는 수집 거래는 버튼 없이 자동 반영
   },
 };
 
@@ -5591,25 +5599,114 @@ function populateLedgerEmailAcct() {
   const sel = document.getElementById('l-email-acct'); if (!sel) return;
   sel.innerHTML = `<option value="">— 계좌 선택 —</option>` +
     ledger().accounts.map(a=>`<option value="${a.id}">${a.name}</option>`).join('');
+  const chk = document.getElementById('l-email-autoapply');
+  if (chk) chk.checked = ledger().autoApplyEmail !== false;
 }
 
-async function fetchEmailParsedTxns() {
-  if (!GAS_URL) { alert('Sheets 연동 URL이 설정되지 않았습니다.\nSheets 연동 탭에서 먼저 URL을 설정하세요.'); return; }
-  const btn = event?.target;
+// 한 거래의 계좌를 결정: ① 학습 매핑 → ② 이름 겹치는 계좌 → ③ 기본 계좌(수동 UI에서만)
+function resolveEmailAcct(r, ld, allowDefault) {
+  const map = ld.emailAcctMap || {};
+  if (r.source && map[r.source] && ld.accounts.some(a=>a.id===map[r.source])) return map[r.source];
+  if (r.source) {
+    const byName = ld.accounts.find(a=>a.name && (a.name.includes(r.source)||r.source.includes(a.name)));
+    if (byName) return byName.id;
+  }
+  if (allowDefault) {
+    const d = document.getElementById('l-email-acct')?.value;
+    if (d) return d;
+  }
+  return '';
+}
+
+// 한 거래를 장부에 반영 (수동/자동 공용)
+function applyOneEmailRow(r, acctId, catId, i) {
+  const ld = ledger();
+  const type = r.type || (r.amount<0 ? 'income' : 'expense');
+  const amount = Math.abs(r.amount);
+  ld.txns.push({
+    id:'lt_email_'+Date.now()+'_'+(i||0)+'_'+Math.random().toString(36).slice(2,6),
+    date:r.date, type, catId: catId||null, acctId, toAcctId:null,
+    amount, memo:r.merchant||'', imported:true, fromEmail:true,
+  });
+  updateLedgerAcctBalance(acctId, type==='expense' ? -amount : amount);
+  if (r.source) { ld.emailAcctMap = ld.emailAcctMap || {}; ld.emailAcctMap[r.source] = acctId; }
+  const cat = ld.categories.find(c=>c.id===catId);
+  if (cat?.name==='투자 이체' && type==='expense') {
+    const mm = r.date.slice(0,7);
+    if(!S.deposits) S.deposits={};
+    S.deposits[mm] = (S.deposits[mm]||0) + amount;
+  }
+}
+
+function markEmailRowsDone(idxs) {
+  if (!GAS_URL || !idxs || !idxs.length) return;
+  fetch(GAS_URL, {method:'POST', mode:'cors',
+    body:JSON.stringify({action:'mark_email_done', rowIndices:idxs}),
+    headers:{'Content-Type':'text/plain'}}).catch(()=>{});
+}
+
+// 계좌를 아는 거래는 바로 반영, 모르는 건 남겨서 반환
+function autoApplyEmailRows(rows) {
+  const ld = ledger();
+  const leftovers = [];
+  const doneIdx = [];
+  let applied = 0;
+  rows.forEach((r,i)=>{
+    const acctId = resolveEmailAcct(r, ld, false);
+    if (!acctId) { leftovers.push(r); return; }
+    const type = r.type || (r.amount<0 ? 'income' : 'expense');
+    const catId = autoGuessCatId(r.merchant||'', type);
+    applyOneEmailRow(r, acctId, catId, i);
+    if (r.rowIndex!=null) doneIdx.push(r.rowIndex);
+    applied++;
+  });
+  if (applied) { save(); markEmailRowsDone(doneIdx); }
+  return { applied, leftovers };
+}
+
+async function fetchEmailParsedTxns(opts) {
+  opts = opts || {};
+  if (!GAS_URL) {
+    if (!opts.silent) alert('Sheets 연동 URL이 설정되지 않았습니다.\nSheets 연동 탭에서 먼저 URL을 설정하세요.');
+    return;
+  }
+  if (_emailParsedRows && opts.silent) return; // 검토창 열려있으면 백그라운드 당김 건너뜀
+  const btn = (!opts.silent && typeof event!=='undefined') ? event?.target : null;
   if (btn) { btn.textContent='불러오는 중...'; btn.disabled=true; }
   try {
     const data = await gasRequest(GAS_URL + '?action=load_email_txns');
     if (btn) { btn.textContent='📥 미반영 거래 가져오기'; btn.disabled=false; }
     if (!data.ok) throw new Error(data.error||'응답 오류');
     const rows = data.rows||[];
-    if (rows.length===0) { alert('미반영 거래가 없습니다.'); return; }
-    _emailParsedRows = rows;
-    showEmailPreview(rows);
+    if (rows.length===0) { if (!opts.silent) alert('미반영 거래가 없습니다.'); return; }
+
+    let toReview = rows, autoMsg = '';
+    if (ledger().autoApplyEmail !== false) {
+      const res = autoApplyEmailRows(rows);
+      toReview = res.leftovers;
+      if (res.applied) {
+        autoMsg = `✓ ${res.applied}건 자동 반영`;
+        try { populateLedgerTxnForm(); renderLedgerTxnList(); } catch(e){}
+      }
+    }
+    const msgEl = document.getElementById('l-email-msg');
+    if (toReview.length) {
+      _emailParsedRows = toReview;
+      showEmailPreview(toReview);
+      if (msgEl) msgEl.textContent = autoMsg + (autoMsg?' · ':'') + `${toReview.length}건은 계좌 확인 필요`;
+    } else {
+      if (msgEl) msgEl.textContent = autoMsg || '';
+      if (!opts.silent && !autoMsg) alert('미반영 거래가 없습니다.');
+    }
   } catch(e) {
     if (btn) { btn.textContent='📥 미반영 거래 가져오기'; btn.disabled=false; }
-    alert('가져오기 실패: '+e.message+'\n\nemail_parser.gs 설치 여부를 확인하세요.');
+    if (!opts.silent) alert('가져오기 실패: '+e.message+'\n\nemail_parser.gs 설치 여부를 확인하세요.');
   }
 }
+
+// 앱이 열려있는 동안 주기적으로 조용히 당겨오기
+setInterval(()=>{ try { fetchEmailParsedTxns({silent:true}); } catch(e){} }, 180000);
+setTimeout(()=>{ try { fetchEmailParsedTxns({silent:true}); } catch(e){} }, 4000);
 
 function showEmailPreview(rows) {
   const ld = ledger();
@@ -5642,29 +5739,17 @@ function showEmailPreview(rows) {
       }).join('')}
     </tbody></table></div>`;
 
-  const defaultAcct = document.getElementById('l-email-acct')?.value;
-  const acctMap = ld.emailAcctMap || {};
   rows.forEach((r,i)=>{
     const type=r.type||(r.amount<0?'income':'expense');
     const catSel=document.getElementById(`l-email-cat-${i}`);
     if (catSel) { const g=autoGuessCatId(r.merchant||'',type); if(g) catSel.value=g; }
     const acctSel=document.getElementById(`l-email-acct-sel-${i}`);
-    if (acctSel) {
-      // ① 출처별로 학습된 매핑 → ② 출처와 이름이 겹치는 계좌 → ③ 기본 계좌
-      const mapped = r.source && acctMap[r.source] &&
-        ld.accounts.some(a=>a.id===acctMap[r.source]) ? acctMap[r.source] : '';
-      const byName = !mapped && r.source
-        ? (ld.accounts.find(a=>a.name && (a.name.includes(r.source)||r.source.includes(a.name)))||{}).id
-        : '';
-      const pick = mapped || byName || defaultAcct;
-      if (pick) acctSel.value = pick;
-    }
+    if (acctSel) { const pick = resolveEmailAcct(r, ld, true); if (pick) acctSel.value = pick; }
   });
 }
 
 function applyEmailTxns() {
   if (!_emailParsedRows) return;
-  const ld=ledger();
   let count=0, skip=0;
   const appliedIdx=[];
   _emailParsedRows.forEach((r,i)=>{
@@ -5672,31 +5757,12 @@ function applyEmailTxns() {
     const acctId=document.getElementById(`l-email-acct-sel-${i}`)?.value;
     if (!acctId) { skip++; return; }
     const catId=document.getElementById(`l-email-cat-${i}`)?.value||null;
-    const type=r.type||(r.amount<0?'income':'expense');
-    const amount=Math.abs(r.amount);
-    ld.txns.push({
-      id:'lt_email_'+Date.now()+'_'+i, date:r.date, type, catId, acctId,
-      toAcctId:null, amount, memo:r.merchant||'', imported:true, fromEmail:true,
-    });
-    updateLedgerAcctBalance(acctId, type==='expense'?-amount:amount);
-    // 출처→계좌 선택을 학습 (다음 반영부터 자동 선택)
-    if (r.source) { ld.emailAcctMap = ld.emailAcctMap || {}; ld.emailAcctMap[r.source] = acctId; }
-    const cat=ld.categories.find(c=>c.id===catId);
-    if (cat?.name==='투자 이체'&&type==='expense') {
-      const mm=r.date.slice(0,7);
-      if(!S.deposits)S.deposits={};
-      S.deposits[mm]=(S.deposits[mm]||0)+amount;
-    }
+    applyOneEmailRow(r, acctId, catId, i);
     if (r.rowIndex!=null) appliedIdx.push(r.rowIndex);
     count++;
   });
   save();
-  // GAS에 반영 완료 표시 (비동기)
-  if (GAS_URL&&appliedIdx.length>0) {
-    fetch(GAS_URL,{method:'POST',mode:'cors',
-      body:JSON.stringify({action:'mark_email_done',rowIndices:appliedIdx}),
-      headers:{'Content-Type':'text/plain'}}).catch(()=>{});
-  }
+  markEmailRowsDone(appliedIdx);
   document.getElementById('l-email-msg').textContent=
     `✓ ${count}건 반영`+(skip?` (계좌 미선택 ${skip}건 건너뜀)`:'');
   setTimeout(()=>{

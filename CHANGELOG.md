@@ -1,5 +1,28 @@
 # 변경 이력
 
+## Phase 2b — HTTP 직접 수신 + 자동 반영 (2026-09-03)
+
+MacroDroid 이메일 릴레이가 불안정 → Gmail 우회 경로 추가 + 반영을 버튼에서 자동으로.
+
+### 서버 (`apps-script/`)
+- `email_parser.gs`:
+  - `ingestAlertText(text, sourceHint)` — 문자/알림 원문 1건을 받아 즉시 `parseAlert` → `가계부거래` 시트에 append (해시 중복 방지). 인식 실패분은 `미인식알림` 시트에 원문 보관.
+  - 현대카드 `match` 수정: 실제 문자는 `현대 MX Black 승인`(‘현대카드’ 아님) → `/현대/ && /(승인|취소)/ && /누적/`.
+- `Code.gs`:
+  - `doPost` 에 `action=ingest` 분기 — URL `?action=ingest` + 본문(text/plain)에 문자 원문, 또는 JSON `{action:'ingest',text,source}`. → `ingestAlertText` 호출.
+
+### 클라이언트 (`portfolio_manager_4.html`)
+- `S.ledger.autoApplyEmail`(기본 true) — 계좌를 아는 수집 거래는 버튼 없이 장부 자동 반영.
+- `resolveEmailAcct` / `applyOneEmailRow` / `markEmailRowsDone` 로 수동·자동 공용화.
+- `autoApplyEmailRows(rows)` — 매핑/이름매칭으로 계좌가 나오면 즉시 반영 + `mark_email_done`, 안 나오면 검토 목록에 남김.
+- `fetchEmailParsedTxns({silent})` — 앱 로드 4초 후 + 3분마다 조용히 당겨와 자동 반영. 검토창 열려있으면 건너뜀.
+- 가져오기 UI: "자동 반영" 체크박스 추가, 버튼명 "지금 가져오기"로.
+- 검증: 자동반영 on(현대카드 승인/취소 2건 자동 + 경기지역화폐 1건 검토 대기), off(전부 검토), 수동 반영 후 매핑 학습 — 브라우저에서 확인.
+
+### 설계 노트 — 왜 원래 구조(구글시트+GAS+Gmail)를 유지했나
+모델(설계 감각)은 웹 Claude와 같음. 차이는 전체 시스템을 읽고 실행해볼 수 있어서 뭐가 실제로 중요한지 구분 가능하다는 것.
+원래 아키텍처는 "서버 없음·무료·개인·다기기"에 맞는 올바른 선택이었음. 문제는 아키텍처가 아니라 (a) Gmail 스캔 절반 미구현 (b) 동기화 충돌 처리 없음 (c) 자동 시세를 담을 데이터 모델 없음 — 전부 제자리에서 고칠 수 있는 것. 전면 재작성은 작동하는 코드·데이터·사용 습관을 버리고 아는 버그를 모르는 버그와 맞바꾸는 것. 그래서 "실제 문제를 고치는 최소 변경"이 기본. 단, 설계 자체가 막는 부분(Phase 3의 보유종목 모델)은 바꿈.
+
 ## Phase 2 (진행중) — 문자/알림 파서 (2026-08-30)
 
 목표: 결제하면 손 안 대도 `가계부거래` 시트에 쌓이게 (AUDIT A1).

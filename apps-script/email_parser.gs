@@ -82,6 +82,41 @@ function getTxnSheet() {
   return sh;
 }
 
+// ── MacroDroid HTTP 직접 수신 (Code.gs 의 doPost 에서 호출) ──
+//   문자/알림 원문 1건을 받아 즉시 파싱 → '가계부거래' 시트에 적재.
+//   Gmail 을 안 거치므로 5분 트리거보다 빠름.
+function ingestAlertText(rawText, sourceHint) {
+  const text = String(rawText || '').replace(/\r/g, '').trim();
+  if (!text) return { ok: false, error: '빈 내용' };
+
+  const rec = parseAlert(text, new Date());
+  if (rec && rec.skip) return { ok: true, skipped: true };
+  if (!rec) { stashUnparsed(text, sourceHint); return { ok: true, unparsed: true }; }
+
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(30000); } catch (e) { return { ok: false, error: 'busy' }; }
+  try {
+    const sheet  = getTxnSheet();
+    const hashes = getExistingHashes(sheet);
+    if (hashes.has(rec.hash)) return { ok: true, duplicate: true };
+    sheet.appendRow([rec.date, rec.type, rec.merchant, rec.amount, rec.source, rec.raw, rec.hash, '']);
+    return { ok: true, added: true,
+             row: { date: rec.date, type: rec.type, amount: rec.amount, merchant: rec.merchant, source: rec.source } };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// 파서가 인식 못한 원문 보관 (파서 개선용)
+function stashUnparsed(text, sourceHint) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    let sh = ss.getSheetByName('미인식알림');
+    if (!sh) { sh = ss.insertSheet('미인식알림'); sh.appendRow(['시각', '출처힌트', '원문']); }
+    sh.appendRow([new Date(), String(sourceHint || ''), text.slice(0, 1500)]);
+  } catch (e) {}
+}
+
 function getExistingHashes(sheet) {
   const set = new Set();
   const last = sheet.getLastRow();

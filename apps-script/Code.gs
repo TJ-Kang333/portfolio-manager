@@ -149,6 +149,18 @@ function doPost(e) {
       const raw = e.postData.contents;
       try { body = JSON.parse(raw); } catch(err) {}
     }
+    // ── MacroDroid 등에서 문자/알림 원문을 직접 POST (Gmail 우회) ──
+    //   URL 에 ?action=ingest, 본문(text/plain)에 문자 원문. 또는 JSON {action:'ingest', text, source}.
+    const ingestAction = (e.parameter && e.parameter.action === 'ingest') ||
+                         (body && body.action === 'ingest');
+    if (ingestAction) {
+      const text = (body && body.text) ||
+                   (e.parameter && e.parameter.text) ||
+                   (e.postData && e.postData.contents) || '';
+      const src  = (body && body.source) || (e.parameter && e.parameter.source) || '';
+      return makeResponse(ingestAlertText(text, src));
+    }
+
     if (body) {
       if (body.action === 'mark_email_done') return markEmailDone(body.rowIndices);
       if (body.state)              state = body.state;
