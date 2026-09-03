@@ -288,3 +288,21 @@ function _testParser() {
     Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1))));
   });
 }
+
+// ── 실결제 없이 전체 경로 테스트 (편집기에서 실행) ──────────
+//   parseAlert → 가계부거래 시트 적재 → 중복 방지 까지 그대로 탄다.
+//   실행 후 '가계부거래' 시트에 아래 샘플 1줄이 들어오면 서버쪽은 정상.
+//   (같은 걸 또 실행하면 duplicate 로 안 들어옴 = 정상)
+function _testIngest() {
+  const sample = [
+    '[Web발신]',
+    '현대 MX Black 승인',
+    '강*준',
+    '1원 일시불',
+    Utilities.formatDate(new Date(), 'Asia/Seoul', 'MM/dd HH:mm'),
+    '테스트가맹점',
+    '누적1원',
+  ].join('\n');
+  const res = ingestAlertText(sample, 'manual-test');
+  Logger.log(JSON.stringify(res, null, 2));
+}
