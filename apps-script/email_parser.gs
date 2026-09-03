@@ -37,7 +37,8 @@ function setupFinanceAlertTrigger() {
 // ── 메인: Gmail 스캔 → 파싱 → 시트 적재 ──────────────────
 function parseFinanceAlerts() {
   const lock = LockService.getScriptLock();
-  try { lock.waitLock(30000); } catch (e) { return; }
+  // 짧게만 시도 — 못 잡으면 5분 뒤 다시 돌면 됨. ingest(HTTP) 를 오래 막지 않도록.
+  if (!lock.tryLock(3000)) return;
   try {
     const doneLabel   = GmailApp.getUserLabelByName(ALERT_DONE_LABEL)   || GmailApp.createLabel(ALERT_DONE_LABEL);
     const reviewLabel = GmailApp.getUserLabelByName(ALERT_REVIEW_LABEL) || GmailApp.createLabel(ALERT_REVIEW_LABEL);
@@ -89,21 +90,21 @@ function ingestAlertText(rawText, sourceHint) {
   const text = String(rawText || '').replace(/\r/g, '').trim();
   if (!text) return { ok: false, error: '빈 내용' };
 
-  const rec = parseAlert(text, new Date());
+  const rec = parseAlert(text, new Date(), sourceHint);
   if (rec && rec.skip) return { ok: true, skipped: true };
   if (!rec) { stashUnparsed(text, sourceHint); return { ok: true, unparsed: true }; }
 
   const lock = LockService.getScriptLock();
-  try { lock.waitLock(30000); } catch (e) { return { ok: false, error: 'busy' }; }
+  const locked = lock.tryLock(15000); // 못 잡아도 진행 — 중복은 해시로 거른다
   try {
     const sheet  = getTxnSheet();
     const hashes = getExistingHashes(sheet);
     if (hashes.has(rec.hash)) return { ok: true, duplicate: true };
     sheet.appendRow([rec.date, rec.type, rec.merchant, rec.amount, rec.source, rec.raw, rec.hash, '']);
-    return { ok: true, added: true,
+    return { ok: true, added: true, lockless: !locked,
              row: { date: rec.date, type: rec.type, amount: rec.amount, merchant: rec.merchant, source: rec.source } };
   } finally {
-    lock.releaseLock();
+    if (locked) lock.releaseLock();
   }
 }
 
@@ -132,12 +133,29 @@ function extractAlertText(msg) {
   return body.replace(/\r/g, '').trim();
 }
 
+// MacroDroid URL 의 &source=... 값을 파서 키로 정규화
+function normalizeSourceHint(s) {
+  s = String(s || '').toLowerCase().trim();
+  if (!s) return '';
+  if (/hyundai|현대/.test(s))                    return 'hyundai';
+  if (/gyeonggi|경기|지역화폐|사랑화폐/.test(s)) return 'gyeonggi';
+  if (/hana|하나/.test(s))                        return 'hana';
+  return s;
+}
+
 // ── 파서 레지스트리 ──────────────────────────────────────
-function parseAlert(text, msgDate) {
-  for (const p of ALERT_PARSERS) {
-    if (!p.match(text)) continue;
+//  sourceHint 가 있으면(= MacroDroid 가 어느 앱에서 왔는지 알려줌) 그 파서를 강제.
+//  알림 텍스트가 잘려 와서 키워드 매칭이 안 되는 경우를 대비.
+function parseAlert(text, msgDate, sourceHint) {
+  const hint = normalizeSourceHint(sourceHint);
+  const list = hint
+    ? ALERT_PARSERS.slice().sort((a, b) => (b.srcKey === hint ? 1 : 0) - (a.srcKey === hint ? 1 : 0))
+    : ALERT_PARSERS;
+  for (const p of list) {
+    const forced = hint && p.srcKey === hint;
+    if (!forced && !p.match(text)) continue;
     const r = p.parse(text, msgDate);
-    if (r && r.skip) return { skip: true }; // 인식은 됨, 거래로 기록하진 않음
+    if (r && r.skip) return { skip: true };
     if (r && r.amount > 0 && r.date) {
       r.source = r.source || p.name;
       r.raw    = text.slice(0, 500);
@@ -145,6 +163,7 @@ function parseAlert(text, msgDate) {
       r.hash   = makeHash(r);
       return r;
     }
+    if (forced) return null; // 지정된 파서가 못 뽑으면 다른 파서로 넘기지 않음
   }
   return null;
 }
@@ -178,6 +197,7 @@ const ALERT_PARSERS = [
   //  (취소 문자는 2번째 줄이 "현대 MX Black 취소")
   {
     name: '현대카드',
+    srcKey: 'hyundai',
     // 실제 문자는 "현대카드"가 아니라 "현대 MX Black" 식 → '현대' + 승인/취소 + '누적' 조합으로 식별
     match: t => /현대/.test(t) && /(승인|취소)/.test(t) && /누적/.test(t),
     parse: (t, msgDate) => {
@@ -216,7 +236,10 @@ const ALERT_PARSERS = [
   //  (결제 실패 알림은 무시. 푸시 본문에 날짜가 없으면 메일 수신시각 사용)
   {
     name: '경기지역화폐',
-    match: t => /(경기지역화폐|지역화폐|사랑화폐)/.test(t) && /결제/.test(t),
+    srcKey: 'gyeonggi',
+    // 알림이 잘려 와도 잡히도록 "결제 완료/취소/실패" 만으로도 매칭
+    match: t => /결제\s*(완료|취소|실패)/.test(t) ||
+                (/(경기지역화폐|지역화폐|사랑화폐)/.test(t) && /결제/.test(t)),
     parse: (t, msgDate) => {
       if (/결제\s*실패/.test(t)) return { skip: true }; // 거래 아님
       const isCancel = /(결제\s*취소|취소\s*완료|승인\s*취소|환불)/.test(t);
