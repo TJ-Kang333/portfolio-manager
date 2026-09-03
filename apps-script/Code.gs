@@ -134,6 +134,8 @@ function doGet(e) {
     if (action === 'load')            return makeResponse({ ok: true, state: loadState(), rev: getRev() });
     if (action === 'rev')             return makeResponse({ ok: true, rev: getRev() });
     if (action === 'load_email_txns') return loadEmailTxns();
+    if (action === 'okx_balance')     return makeResponse(okxBalanceKRW());   // okx.gs
+    if (action === 'load_snapshots')  return makeResponse(loadSnapshots());   // 자산스냅샷 시트
     return makeResponse({ ok: false, error: '알 수 없는 action' });
   } catch(err) {
     return makeResponse({ ok: false, error: err.message });

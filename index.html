@@ -481,10 +481,11 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
         <input type="text" inputmode="decimal" id="crypto-usdt" placeholder="0" oninput="formatCryptoUsdt(this)" />
       </div>
       <button class="btn btn-primary" onclick="saveCryptoEntry()">저장</button>
+      <button class="btn" onclick="fetchOkxBalanceNow()" title="OKX API 키로 현재 잔고 자동 조회">⟳ OKX 자동 조회</button>
     </div>
     <div style="font-size:12px;color:var(--text2);margin-bottom:6px;">
-      📊 입력 시 OKX의 해당 월 마지막 거래일 USDT/USD 종가 + 한국은행 마감환율(USD→KRW)을 자동 조회합니다.<br>
-      자동 조회가 실패하면 직접 입력할 수 있습니다.
+      📊 <b>OKX 자동 조회</b>: Apps Script에 OKX 조회 전용 키를 넣어두면 현재 잔고(USD)를 받아 원화로 환산해 이번 달에 기록합니다.<br>
+      수동: USDT 금액을 직접 넣고 저장하면 해당 월 종가·환율로 환산합니다. 자동 조회 실패 시 직접 입력할 수 있습니다.
     </div>
     <div id="crypto-rate-info" style="font-size:12px;color:var(--text3);"></div>
   </div>
@@ -1358,6 +1359,40 @@ async function fetchUsdKrw(yyyymm) {
     if (data?.rates?.KRW) return parseFloat(data.rates.KRW);
   } catch(e) {}
   return null;
+}
+
+// OKX 잔고를 Apps Script(조회 전용 키)로 받아 이번 달 항목에 자동 기록
+async function fetchOkxBalanceNow() {
+  const info = document.getElementById('crypto-rate-info');
+  if (!GAS_URL) { alert('먼저 "Sheets 연동"에서 웹앱 URL을 저장하세요.'); return; }
+  const btn = (typeof event!=='undefined') ? event?.target : null;
+  if (btn) { btn.disabled = true; btn.textContent = '조회 중...'; }
+  if (info) info.textContent = '⏳ OKX 잔고 조회 중...';
+  try {
+    const d = await gasRequest(GAS_URL + '?action=okx_balance');
+    if (!d || !d.ok) throw new Error((d && d.error) || '응답 오류');
+    if (!d.krw) throw new Error('환율 조회 실패 (USD ' + (d.usd||'?') + ')');
+    const now = new Date();
+    const month = (document.getElementById('crypto-month').value)
+      || now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+    const acct = 'OKX';
+    S.cryptoEntries = S.cryptoEntries || {};
+    S.cryptoEntries[month + '__' + acct] = {
+      month, acct,
+      usdt: Math.round((d.usd||0)*100)/100,   // USDT≈USD 로 근사
+      usdtPrice: 1,
+      krwRate: d.krwRate,
+      krw: d.krw,
+      manual: false, auto: 'okx', ts: d.ts,
+    };
+    save();
+    renderCryptoTable();
+    if (info) info.innerHTML = `✓ OKX ${month}: $${(d.usd||0).toLocaleString()} × ${Number(d.krwRate).toFixed(1)} = <b style="color:var(--text)">${d.krw.toLocaleString()}원</b>`;
+  } catch(e) {
+    if (info) info.innerHTML = `<span style="color:var(--neg)">✕ OKX 조회 실패: ${e.message}</span><br><span style="font-size:11px;">Apps Script 스크립트 속성에 OKX 키 3개가 있는지 확인</span>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⟳ OKX 자동 조회'; }
+  }
 }
 
 async function saveCryptoEntry() {

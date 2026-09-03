@@ -1,5 +1,26 @@
 # 변경 이력
 
+## Phase 3a — OKX 잔고 자동 조회 (2026-09-04)
+
+### 새 파일 `apps-script/okx.gs`
+- `okxBalanceKRW()` — OKX V5 서명 요청(`/api/v5/account/balance` + `/api/v5/asset/balances`) → USD 총액 → `open.er-api.com`(fallback frankfurter) USD/KRW → 원화.
+- 키는 **스크립트 속성**에서만 읽음: `OKX_API_KEY` / `OKX_API_SECRET` / `OKX_PASSPHRASE` (+ 선택 `OKX_SIMULATED=1`). 코드·시트·대화 어디에도 안 들어감.
+- `snapshotOkx()` + `setupOkxTrigger()` — 매일 06시 `자산스냅샷` 시트(A일시 B출처 C KRW D USD E USD_KRW F상세)에 append.
+- `loadSnapshots()` — 앱이 스냅샷 시트를 읽어감.
+- `Code.gs` `doGet`: `?action=okx_balance`, `?action=load_snapshots` 라우팅 추가.
+
+### 클라이언트 `index.html`
+- 암호화폐 페이지에 **"⟳ OKX 자동 조회"** 버튼 → `?action=okx_balance` → 이번 달 `OKX` 항목을 자동 기록(`auto:'okx'`). 성공/환율실패/키없음 각각 메시지.
+- 기존 수동 USDT 입력 흐름은 그대로.
+- 브라우저 검증: 성공(항목 생성+표시), 환율 실패, 서버 에러 3케이스.
+
+### 사용자가 할 것
+1. OKX에서 **조회 전용** API 키 발급 (거래·출금 권한 없이). Passphrase 기억.
+2. Apps Script 프로젝트 설정 → 스크립트 속성에 3개 추가.
+3. `okx.gs` 새 파일로 추가 + `Code.gs` 교체 → 새 버전 배포.
+4. 편집기에서 `_testOkx` 실행해 로그 확인 → 되면 `setupOkxTrigger` 실행.
+5. 앱 암호화폐 페이지에서 "OKX 자동 조회" 눌러 확인.
+
 ## Phase 2b — HTTP 직접 수신 + 자동 반영 (2026-09-03)
 
 MacroDroid 이메일 릴레이가 불안정 → Gmail 우회 경로 추가 + 반영을 버튼에서 자동으로.
