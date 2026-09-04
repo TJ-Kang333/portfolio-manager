@@ -102,6 +102,7 @@ function loadEmailTxns() {
         amount:   amount,
         source:   String(row[4] || '').trim(),
         raw:      String(row[5] || '').trim(),
+        ts:       row[8] ? (row[8] instanceof Date ? row[8].toISOString() : String(row[8])) : '',
       });
     }
     return makeResponse({ ok: true, rows });

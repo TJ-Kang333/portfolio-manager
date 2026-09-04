@@ -5688,23 +5688,86 @@ function markEmailRowsDone(idxs) {
     headers:{'Content-Type':'text/plain'}}).catch(()=>{});
 }
 
+// ── 계좌간 이체 자동 인식 ────────────────────────────────
+// 우리은행 출금 X원 + 하나은행 입금 X원(비슷한 시각) 처럼, 서로 다른 은행 알림 두 건이
+// 짝을 이루면 지출+수입 두 건이 아니라 "이체" 한 건으로 합친다 (가계부 지출/수입 합계가
+// 부풀지 않도록). 은행 계좌끼리만 대상 — 카드 결제·지역화폐는 이체 후보 아님.
+const TRANSFER_SOURCES = ['우리은행', '하나은행'];
+const TRANSFER_WINDOW_MS = 15 * 60 * 1000; // ±15분
+
+function _alertTime(r) {
+  const t = r.ts ? Date.parse(r.ts) : NaN;
+  return isNaN(t) ? null : t;
+}
+function _closeInTime(a, b) {
+  const ta = _alertTime(a), tb = _alertTime(b);
+  if (ta == null || tb == null) return a.date === b.date; // 시각 없으면 날짜만 비교
+  return Math.abs(ta - tb) <= TRANSFER_WINDOW_MS;
+}
+// rows 안에서 이체로 보이는 쌍을 찾는다. { pairs:[{out,inn}], usedIdx:Set } 반환.
+function findTransferPairs(rows) {
+  const used = new Set();
+  const pairs = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (used.has(i)) continue;
+    const a = rows[i];
+    if (!TRANSFER_SOURCES.includes(a.source)) continue;
+    for (let j = i + 1; j < rows.length; j++) {
+      if (used.has(j)) continue;
+      const b = rows[j];
+      if (!TRANSFER_SOURCES.includes(b.source) || b.source === a.source) continue;
+      if (Math.abs(b.amount) !== Math.abs(a.amount)) continue;
+      const at = a.type || (a.amount < 0 ? 'income' : 'expense');
+      const bt = b.type || (b.amount < 0 ? 'income' : 'expense');
+      if (at === bt) continue; // 한쪽은 출금, 한쪽은 입금이어야 짝
+      if (!_closeInTime(a, b)) continue;
+      pairs.push(at === 'expense' ? { out: a, inn: b } : { out: b, inn: a });
+      used.add(i); used.add(j);
+      break;
+    }
+  }
+  return { pairs, usedIdx: used };
+}
+
 // 계좌를 아는 거래는 바로 반영, 모르는 건 남겨서 반환
 function autoApplyEmailRows(rows) {
   const ld = ledger();
   const leftovers = [];
   const doneIdx = [];
-  let applied = 0;
-  rows.forEach((r,i)=>{
+  let applied = 0, transferred = 0;
+
+  const { pairs, usedIdx } = findTransferPairs(rows);
+  pairs.forEach(({ out, inn }) => {
+    const fromAcct = resolveEmailAcct(out, ld, false);
+    const toAcct   = resolveEmailAcct(inn, ld, false);
+    if (!fromAcct || !toAcct) { leftovers.push(out); leftovers.push(inn); return; } // 계좌 모르면 검토로
+    const amount = Math.abs(out.amount);
+    ld.txns.push({
+      id: 'lt_xfer_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      date: out.date, type: 'transfer', catId: null, acctId: fromAcct, toAcctId: toAcct,
+      amount, memo: '계좌이체 자동인식 (' + out.source + ' → ' + inn.source + ')',
+      imported: true, fromEmail: true,
+    });
+    updateLedgerAcctBalance(fromAcct, -amount);
+    updateLedgerAcctBalance(toAcct, amount);
+    if (out.rowIndex != null) doneIdx.push(out.rowIndex);
+    if (inn.rowIndex != null) doneIdx.push(inn.rowIndex);
+    transferred++; applied += 2;
+  });
+
+  rows.forEach((r, i) => {
+    if (usedIdx.has(i)) return; // 위에서 이체로 이미 처리됨
     const acctId = resolveEmailAcct(r, ld, false);
     if (!acctId) { leftovers.push(r); return; }
-    const type = r.type || (r.amount<0 ? 'income' : 'expense');
-    const catId = autoGuessCatId(r.merchant||'', type);
+    const type = r.type || (r.amount < 0 ? 'income' : 'expense');
+    const catId = autoGuessCatId(r.merchant || '', type);
     applyOneEmailRow(r, acctId, catId, i);
-    if (r.rowIndex!=null) doneIdx.push(r.rowIndex);
+    if (r.rowIndex != null) doneIdx.push(r.rowIndex);
     applied++;
   });
+
   if (applied) { save(); markEmailRowsDone(doneIdx); }
-  return { applied, leftovers };
+  return { applied, leftovers, transferred };
 }
 
 async function fetchEmailParsedTxns(opts) {
@@ -5728,7 +5791,7 @@ async function fetchEmailParsedTxns(opts) {
       const res = autoApplyEmailRows(rows);
       toReview = res.leftovers;
       if (res.applied) {
-        autoMsg = `✓ ${res.applied}건 자동 반영`;
+        autoMsg = `✓ ${res.applied}건 자동 반영` + (res.transferred ? ` (계좌이체 ${res.transferred}건 자동 병합)` : '');
         try { populateLedgerTxnForm(); renderLedgerTxnList(); } catch(e){}
       }
     }
