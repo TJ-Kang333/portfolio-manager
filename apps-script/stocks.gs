@@ -18,6 +18,7 @@ function isDomesticTicker(ticker) {
 }
 
 // 네이버 금융 폴링 API — 국내 종목 여러 개를 한 번에 조회 (키 불필요)
+// 실제 응답 형태(2026-09 확인): { pollingInterval, datas:[ {itemCode, stockName, closePriceRaw, ...} ] }
 function fetchKrPrices(codes) {
   const out = {};
   if (!codes.length) return out;
@@ -26,11 +27,9 @@ function fetchKrPrices(codes) {
     const res  = UrlFetchApp.fetch(url, { muteHttpExceptions: true,
       headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.naver.com/' } });
     const json = JSON.parse(res.getContentText());
-    (((json || {}).result || {}).areas || []).forEach(area => {
-      (area.datas || []).forEach(d => {
-        const p = parseFloat(d.nv); // 현재가
-        if (d.cd && !isNaN(p)) out[d.cd] = p;
-      });
+    (json.datas || []).forEach(d => {
+      const p = parseFloat(d.closePriceRaw); // 콤마 없는 현재가(장중엔 체결가, 장마감 후엔 종가)
+      if (d.itemCode && !isNaN(p)) out[d.itemCode] = p;
     });
   } catch (e) {}
   return out;
