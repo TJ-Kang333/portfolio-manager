@@ -64,32 +64,81 @@ function _usdKrw() {
   return null;
 }
 
-// 거래계정(account/balance) + 펀딩계정(asset/balances) 합산 → USD 총액
+// 스테이블 외 코인 시세(USD) — OKX 공개 시세 API, 키 불필요
+const _okxPriceCache = {};
+function _okxSpotUsdPrice(ccy) {
+  if (ccy === 'USDT' || ccy === 'USDC' || ccy === 'USD') return 1;
+  if (ccy in _okxPriceCache) return _okxPriceCache[ccy];
+  let price = null;
+  try {
+    const r = JSON.parse(UrlFetchApp.fetch(
+      OKX_BASE + '/api/v5/market/ticker?instId=' + ccy + '-USDT',
+      { muteHttpExceptions: true }).getContentText());
+    if (r.data && r.data[0] && r.data[0].last) price = parseFloat(r.data[0].last);
+  } catch (e) {}
+  _okxPriceCache[ccy] = price;
+  return price;
+}
+// bucket 은 { ccy: usd } 또는 { ccy: {qty,note} } 로 채워짐 — 같은 ccy 가 여러 창구(적립+스테이킹)에
+// 걸쳐 있어도 누적되도록 처리. 반환값은 이번 호출로 추가된 USD (합계 usd 에 그대로 더하면 됨).
+function _addPriced(bucket, ccy, qty) {
+  const price = _okxSpotUsdPrice(ccy);
+  if (price) {
+    const add = qty * price;
+    const prev = (typeof bucket[ccy] === 'number') ? bucket[ccy] : 0;
+    bucket[ccy] = prev + add;
+    return add;
+  }
+  const prevQty = (bucket[ccy] && typeof bucket[ccy] === 'object') ? bucket[ccy].qty : 0;
+  bucket[ccy] = { qty: prevQty + qty, note: '시세 조회 실패' };
+  return 0;
+}
+
+// 거래·펀딩·Earn(적립/스테이킹) 계좌 전부 합산 → USD 총액
+// Earn 은 OKX 내부적으로도 여러 창구(유연적립/고정적립/스테이킹)로 나뉘어 있어
+// 전부 다 못 잡을 수 있음 — detail 을 보고 빠진 게 있으면 알려주면 그 창구를 추가함.
 function okxTotalUsd() {
   let usd = 0;
-  const detail = { trading: {}, funding: {} };
+  const detail = { trading: {}, funding: {}, earn: {} };
 
-  // 거래(트레이딩) 계정
-  const acct = _okxGet('/api/v5/account/balance');
-  if (acct[0]) {
-    (acct[0].details || []).forEach(d => {
-      const v = parseFloat(d.eqUsd || '0');
-      if (v) { usd += v; detail.trading[d.ccy] = v; }
-    });
-  }
-  // 펀딩 계정 — eqUsd 가 없어 수량만 옴. USDT/USDC 는 1달러로, 그 외는 스킵(추후 시세연동).
+  // 거래(트레이딩) 계정 — eqUsd 를 바로 줌
+  try {
+    const acct = _okxGet('/api/v5/account/balance');
+    if (acct[0]) {
+      (acct[0].details || []).forEach(d => {
+        const v = parseFloat(d.eqUsd || '0');
+        if (v) { usd += v; detail.trading[d.ccy] = v; }
+      });
+    }
+  } catch (e) { detail.tradingError = e.message; }
+
+  // 펀딩 계정 — 수량만 옴 → 시세 곱해서 환산
   try {
     const fund = _okxGet('/api/v5/asset/balances');
     fund.forEach(d => {
       const bal = parseFloat(d.bal || '0');
-      if (!bal) return;
-      if (d.ccy === 'USDT' || d.ccy === 'USDC' || d.ccy === 'USD') {
-        usd += bal; detail.funding[d.ccy] = bal;
-      } else {
-        detail.funding[d.ccy] = { bal, note: '시세 미연동' };
-      }
+      if (bal) usd += _addPriced(detail.funding, d.ccy, bal);
     });
   } catch (e) { detail.fundingError = e.message; }
+
+  // Earn — 심플언 유연적립(Flexible Savings)
+  try {
+    const savings = _okxGet('/api/v5/finance/savings/balance');
+    savings.forEach(d => {
+      const amt = parseFloat(d.amt || '0');
+      if (amt) usd += _addPriced(detail.earn, d.ccy, amt);
+    });
+  } catch (e) { detail.earnSavingsError = e.message; }
+
+  // Earn — 스테이킹/온체인(ETH 스테이킹 등) 활성 주문
+  try {
+    const orders = _okxGet('/api/v5/finance/staking-defi/orders-active');
+    orders.forEach(o => {
+      const inv = (o.investData || [])[0];
+      const amt = inv ? parseFloat(inv.amt || '0') : 0;
+      if (amt && inv.ccy) usd += _addPriced(detail.earn, inv.ccy, amt);
+    });
+  } catch (e) { detail.earnStakingError = e.message; }
 
   return { usd, detail };
 }
