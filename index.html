@@ -323,7 +323,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
           <th style="width:36px;text-align:center;">
             <input type="checkbox" id="chk-all" checked title="전체 선택" onchange="toggleAll(this.checked)" style="width:15px;height:15px;" />
           </th>
-          <th>종목명</th><th>계좌번호</th><th class="r">평가금액</th><th>자산군</th>
+          <th>종목명</th><th>계좌번호</th><th class="r">보유수량</th><th class="r">평가금액</th><th>자산군</th>
         </tr></thead>
         <tbody id="import-rows"></tbody>
       </table>
@@ -2897,6 +2897,7 @@ function renderStep2() {
       <td style="text-align:center;"><input type="checkbox" id="ichk-${ri}" checked onchange="toggleRow(${ri})" style="width:15px;height:15px;" /></td>
       <td style="font-size:12px;max-width:200px;">${h.name}</td>
       <td style="font-size:11px;font-family:var(--mono);color:var(--text3);">${h.acctNo}</td>
+      <td class="r" style="font-family:var(--mono);font-size:12px;color:${h.qty?'var(--text)':'var(--text3)'};">${h.qty ? h.qty.toLocaleString(undefined,{maximumFractionDigits:4}) : '—'}</td>
       <td class="r" style="font-family:var(--mono);font-size:12px;">${h.balance.toLocaleString()}원</td>
       <td>
         <select id="imap-${ri}" style="font-size:12px;padding:4px 6px;width:100%;" onchange="updateSummary()">
