@@ -125,3 +125,12 @@ function _testStockPrices() {
   const codes = ['069500', '160580', '385560', '453870', '464470', '474800', '0172V0', 'TSLA'];
   Logger.log(JSON.stringify(fetchStockPricesKRW(codes), null, 2));
 }
+
+// 국내 시세 API가 실제로 뭘 돌려주는지 원문 그대로 확인 (파싱 전 raw 응답)
+function _testKrPriceRaw() {
+  const url = 'https://polling.finance.naver.com/api/realtime/domestic/stock/069500,160580';
+  const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true,
+    headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.naver.com/' } });
+  Logger.log('HTTP ' + res.getResponseCode());
+  Logger.log(res.getContentText().slice(0, 1500));
+}
