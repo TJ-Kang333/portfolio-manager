@@ -187,8 +187,12 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head">
       <span class="card-title">계좌별 잔고</span>
-      <button class="btn-sm" onclick="showPage('import')">CSV로 업데이트 →</button>
+      <span style="display:flex;gap:6px;">
+        <button class="btn-sm" id="btn-stock-refresh" onclick="refreshStockPrices()" title="수량이 저장된 종목의 시세를 지금 다시 조회">⟳ 시세 갱신</button>
+        <button class="btn-sm" onclick="showPage('import')">CSV로 업데이트 →</button>
+      </span>
     </div>
+    <div id="stock-refresh-msg" style="font-size:11px;color:var(--text3);margin-bottom:6px;"></div>
     <table>
       <thead id="dash-acct-thead"><tr>
         <th>계좌명</th><th>계좌번호</th><th class="r">총 잔고</th><th class="r">비중</th>
@@ -2690,6 +2694,52 @@ function parseAndRender() {
   const amtIdx  = headerCols.findIndex(h => /평가금액|평가액|잔고|시장가/.test(h));
   const acctIdx = headerCols.findIndex(h => /계좌번호/.test(h));
 
+  // ── 보유종목 목록 형식 (유형/종목번호/종목명/구분/보유량/평균단가/현재가/매입금액/평가금액/평가손익/수익률)
+  //    미래에셋 MTS "보유종목" 내보내기 — 계좌 1개 기준, 종목코드·수량이 그대로 들어있어
+  //    시세 자동조회에 필요한 qty/avgPrice 까지 한 번에 저장할 수 있음.
+  const codeIdx = headerCols.findIndex(h => /종목번호|종목코드/.test(h));
+  const qtyIdx  = headerCols.findIndex(h => /보유량|보유수량/.test(h));
+  if (nameIdx >= 0 && amtIdx >= 0 && codeIdx >= 0 && qtyIdx >= 0) {
+    if (acctIdx < 0 && !defaultAcct) { showAcctNoPrompt(() => parseAndRender()); return; }
+    const typeIdx = headerCols.findIndex(h => /^유형$/.test(h));
+    const avgIdx  = headerCols.findIndex(h => /평균단가/.test(h));
+    const curIdx  = headerCols.findIndex(h => /^현재가$/.test(h));
+    const fallbackAcct = normalizeAcctNo(defaultAcct) || '미지정-' + Date.now().toString(36);
+    const holdingsX = [];
+    for (let i=1; i<lines.length; i++) {
+      const cols = parseCSVLine(lines[i]);
+      if (cols.length === 0) continue;
+      const name = (cols[nameIdx]||'').trim();
+      const balance = cleanNum(cols[amtIdx]);
+      if (!name || balance<=0 || name.startsWith('[')) continue;
+      const qty = parseFloat(String(cols[qtyIdx]||'0').replace(/,/g,'')) || 0;
+      const type = typeIdx>=0 ? (cols[typeIdx]||'').trim() : '';
+      let code = (cols[codeIdx]||'').trim();
+      // 국내 종목(주식/ETF/ETN)은 "A"+코드로 오는 게 미래에셋 관례 → 시세 조회용으로 A 제거.
+      // 소수해외 등은 종목번호가 곧 해외 티커(예: TSLA)라 그대로 둠.
+      let ticker = code;
+      if (/^A[0-9A-Z]{5,7}$/.test(code) && !/해외/.test(type)) ticker = code.slice(1);
+      if (!ticker) ticker = name;
+      const acctNo = acctIdx>=0 && cols[acctIdx]?.trim() ? normalizeAcctNo(cols[acctIdx].trim()) : fallbackAcct;
+      holdingsX.push({
+        acctNo, ticker, name, balance, qty,
+        avgPrice: avgIdx>=0 ? cleanNum(cols[avgIdx]) : 0,
+        currentPrice: curIdx>=0 ? cleanNum(cols[curIdx]) : 0,
+      });
+    }
+    if (holdingsX.length === 0) { alert('CSV는 인식했지만 유효한 종목 데이터가 없습니다.'); return; }
+    const groupedX = {};
+    holdingsX.forEach(h=>{
+      const key=h.acctNo+'||'+h.ticker;
+      if(!groupedX[key]) groupedX[key]={...h, balance:0, qty:0};
+      groupedX[key].balance+=h.balance; groupedX[key].qty+=h.qty;
+      groupedX[key].avgPrice=h.avgPrice; groupedX[key].currentPrice=h.currentPrice;
+    });
+    _parsed = Object.values(groupedX);
+    renderStep2();
+    return;
+  }
+
   // 헤더에 종목명+평가금액이 있으면 단순 헤더 형식으로 처리
   if (nameIdx >= 0 && amtIdx >= 0) {
     // 계좌번호 컬럼도 없고 기본 계좌번호도 없으면 팝업으로 요청
@@ -2942,7 +2992,13 @@ function applyImport() {
     }
     if(!S.months[month][h.acctNo]) S.months[month][h.acctNo]={};
     const prev=S.months[month][h.acctNo][h.ticker];
-    S.months[month][h.acctNo][h.ticker]={name:h.name, balance:h.balance, assetId, added:prev?.added||0};
+    S.months[month][h.acctNo][h.ticker]={
+      name:h.name, balance:h.balance, assetId, added:prev?.added||0,
+      // CSV에 수량·단가가 있으면 같이 저장 (시세 자동조회의 기반. 없으면 기존처럼 balance만)
+      ...(h.qty ? {qty:h.qty} : {}),
+      ...(h.avgPrice ? {avgPrice:h.avgPrice} : {}),
+      ...(h.currentPrice ? {currentPrice:h.currentPrice} : {}),
+    };
   });
 
   // 예수금/현금 입력 반영
@@ -2966,6 +3022,47 @@ function applyImport() {
   const msg=document.getElementById('import-msg');
   msg.textContent=`✓ ${month} 잔고 적용 완료!`;
   setTimeout(()=>{msg.textContent=''; showPage('dashboard');},1200);
+}
+
+// 최신 월의 "수량이 저장된" 종목들 시세를 서버(Apps Script)로 조회해 평가금액을 지금 시점으로 갱신.
+// 수량 없이 CSV로 금액만 들어온 종목은 건드리지 않음 (자동 계산할 근거가 없음).
+async function refreshStockPrices() {
+  const msgEl = document.getElementById('stock-refresh-msg');
+  const btn = document.getElementById('btn-stock-refresh');
+  if (!GAS_URL) { if (msgEl) msgEl.textContent = 'Sheets 연동 URL을 먼저 설정하세요.'; return; }
+  const month = sortedMonths().slice(-1)[0];
+  if (!month || !S.months[month]) { if (msgEl) msgEl.textContent = '저장된 월별 잔고가 없습니다.'; return; }
+
+  const targets = []; // [{acctNo, ticker}]
+  const tickerSet = new Set();
+  Object.entries(S.months[month]).forEach(([acctNo, tickers]) => {
+    Object.entries(tickers).forEach(([ticker, h]) => {
+      if (h && h.qty > 0) { targets.push({ acctNo, ticker }); tickerSet.add(ticker); }
+    });
+  });
+  if (!targets.length) { if (msgEl) msgEl.textContent = '수량이 저장된 종목이 없습니다 (CSV에 종목번호·보유량이 있는 걸로 다시 가져와야 함).'; return; }
+
+  if (btn) { btn.disabled = true; btn.textContent = '조회 중...'; }
+  if (msgEl) msgEl.textContent = `⏳ ${tickerSet.size}개 종목 시세 조회 중...`;
+  try {
+    const data = await gasRequest(GAS_URL + '?action=stock_prices&tickers=' + encodeURIComponent([...tickerSet].join(',')));
+    if (!data || !data.ok) throw new Error((data && data.error) || '응답 오류');
+    const prices = data.prices || {};
+    let updated = 0, missed = 0;
+    targets.forEach(({acctNo, ticker}) => {
+      const p = prices[ticker];
+      const h = S.months[month][acctNo][ticker];
+      if (p) { h.currentPrice = p; h.balance = Math.round(h.qty * p); updated++; }
+      else missed++;
+    });
+    save();
+    try { renderDashboard(); } catch(e) {}
+    if (msgEl) msgEl.textContent = `✓ ${updated}개 종목 시세 반영` + (missed ? ` (${missed}개 조회 실패)` : '') + ` · ${month}`;
+  } catch (e) {
+    if (msgEl) msgEl.textContent = `✕ 시세 조회 실패: ${e.message}`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⟳ 시세 갱신'; }
+  }
 }
 
 // ── HISTORY ────────────────────────────────────────────────
