@@ -6657,6 +6657,22 @@ function showMerchantCatSettings() {
   document.body.appendChild(overlay);
 }
 
+// 키워드 매칭이 안 될 때 쓸 기본 카테고리. '미분류'/'기타' 이름이 있으면 그걸 쓰고,
+// 없으면 하나 만들어서 씀. 예전처럼 "목록의 마지막 카테고리"에 기대지 않음 —
+// 그게 우연히 '개인용도'(자동으로 personal 타입 변환 트리거)면 지출 집계에서
+// 조용히 빠지는 문제가 있었음.
+function getFallbackCatId(type) {
+  const ld = ledger();
+  const cats = ld.categories.filter(c => c.type === type);
+  const found = cats.find(c => /^(미분류|기타)$/.test(c.name.replace(/\s/g, '')));
+  if (found) return found.id;
+  const id = 'cat_unclassified_' + type;
+  if (!ld.categories.some(c => c.id === id)) {
+    ld.categories.push({ id, name: '미분류', type, color: '#9CA3AF' });
+  }
+  return id;
+}
+
 function autoGuessCatId(memo, type) {
   const ld = ledger();
   const m = memo.toLowerCase();
@@ -6696,7 +6712,7 @@ function autoGuessCatId(memo, type) {
       if (found) return found.id;
     }
   }
-  return cats[cats.length-1]?.id || null; // 기타
+  return getFallbackCatId(type);
 }
 
 // CSV 미리보기 정렬 상태
