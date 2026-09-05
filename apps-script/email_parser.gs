@@ -239,12 +239,13 @@ const ALERT_PARSERS = [
           merchant = (merchant ? merchant + ' ' : '') + lines[i];
         }
       }
-      // ② 앱 알림 형식 — 못 찾았으면 첫 줄이 금액·승인·이름 언급이 아닌 경우 그게 가맹점(알림 제목)
+      // ② 앱 알림 형식 — 못 찾았으면, 보일러플레이트(금액/승인·취소/이름/누적/앱이름 자체) 아닌
+      // 첫 줄을 가맹점으로. 알림 제목이 "현대카드"(앱 이름)로 오고 본문에 가맹점이 있는 경우 대비 —
+      // 그냥 lines[0] 을 쓰면 "현대카드"가 가맹점으로 잘못 들어감.
       if (!merchant) {
-        const first = lines[0] || '';
-        if (first && !/원/.test(first) && !/(승인|취소)/.test(first) && !/^\d/.test(first) && !/님,?$/.test(first)) {
-          merchant = first;
-        }
+        const isBoilerplate = l => !l || /원/.test(l) || /(승인|취소)/.test(l) || /^\d/.test(l) ||
+          /님,?$/.test(l) || /^현대\s*(카드)?$/.test(l) || /MX\s*Black/i.test(l) || /^누적/.test(l);
+        merchant = lines.find(l => !isBoilerplate(l)) || '';
       }
 
       return { type: isCancel ? 'income' : 'expense', amount, merchant, source: '현대카드', date };
