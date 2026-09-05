@@ -255,7 +255,11 @@ const ALERT_PARSERS = [
         merchant = lines.find(l => !isBoilerplate(l)) || '';
       }
 
-      return { type: isCancel ? 'income' : 'expense', amount, merchant, source: '현대카드', date };
+      // 누적N원 = 이번 결제주기 카드 사용액 = 미결제 부채. 카드 계좌 잔액은 음수로 추적하므로 -값.
+      const cm = t.match(/누적\s*([\d,]+)\s*원/);
+      const balance = cm ? -parseInt(cm[1].replace(/,/g, ''), 10) : null;
+
+      return { type: isCancel ? 'income' : 'expense', amount, merchant, source: '현대카드', date, balance };
     }
   },
 
@@ -303,7 +307,11 @@ const ALERT_PARSERS = [
         date = Utilities.formatDate(msgDate || new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
       }
 
-      return { type: isCancel ? 'income' : 'expense', amount, merchant, source: '경기지역화폐', date };
+      // "총 보유 잔액 N원" = 지역화폐 지갑에 남은 선불금 = +자산. 있으면 계좌 잔액 기준점으로.
+      const bm = t.match(/(?:총\s*)?보유\s*잔액\s*([\d,]+)\s*원/);
+      const balance = bm ? parseInt(bm[1].replace(/,/g, ''), 10) : null;
+
+      return { type: isCancel ? 'income' : 'expense', amount, merchant, source: '경기지역화폐', date, balance };
     }
   },
 
