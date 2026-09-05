@@ -593,6 +593,15 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 
   <!-- 거래내역 탭 -->
   <div id="lsec-txn" style="display:none;">
+    <!-- 확인 필요한 거래 (네이버페이·쿠팡 등 뭘 샀는지 불명확한 결제) -->
+    <div class="card" id="l-review-card" style="margin-bottom:14px;display:none;border:1px solid #E0A93B;background:#FFFBF2;">
+      <div class="card-head">
+        <span class="card-title">⚠️ 확인 필요한 거래</span>
+        <span style="font-size:11px;color:var(--text3);">네이버페이·쿠팡 등 — 카테고리 확인 후 "확인"</span>
+      </div>
+      <div id="l-review-body"></div>
+    </div>
+
     <!-- 정기 거래 템플릿 -->
     <div class="card" style="margin-bottom:14px;">
       <div class="card-head">
@@ -1820,8 +1829,10 @@ function renderNetWorth() {
       <span style="font-size:12px;color:var(--text2);">${label}${sub ? ` <span style="color:var(--text3);">${sub}</span>` : ''}</span>
       <span style="font-family:var(--mono);font-size:13px;color:${val<0?'var(--neg)':'var(--text)'};">${val<0?'-':''}${Math.abs(val).toLocaleString()}원</span>
     </div>`;
+  const reviewCnt = (ledger().txns || []).filter(t => t.needsReview).length;
   el.innerHTML = `
     <div style="font-size:26px;font-weight:600;font-family:var(--mono);margin-bottom:8px;">${nw.total.toLocaleString()}원</div>
+    ${reviewCnt ? `<div style="margin-bottom:8px;"><a href="#" onclick="showPage('ledger');showLedgerTab('txn');return false;" style="font-size:12px;color:#B9770E;text-decoration:none;">⚠️ 확인 필요한 거래 ${reviewCnt}건 — 가계부에서 카테고리 확인 →</a></div>` : ''}
     <div style="border-top:1px solid var(--border2);padding-top:6px;">
       ${row('가계부 계좌 (은행·카드·대출 합)', nw.ledgerNet)}
       ${row('미래에셋 주식', nw.stockTotal, nw.latestMonth ? `(${nw.latestMonth})` : '(데이터 없음)')}
@@ -5114,7 +5125,71 @@ function setLedgerSort(mode) {
   renderLedgerTxnList();
 }
 
+// 뭘 샀는지 불명확한 결제 대행사 — 이 이름이 memo 에 들어있으면 "확인 필요" 로 표시
+const AMBIGUOUS_PAY = ['네이버페이', '네이버파이낸셜', '스마트스토어', '쿠팡', '쿠팡페이', '카카오페이', '페이코', '토스페이', 'SSG', '11번가', 'G마켓', '옥션'];
+function isAmbiguousPay(memo) {
+  const m = String(memo || '');
+  return AMBIGUOUS_PAY.some(k => m.includes(k));
+}
+
+// "확인 필요한 거래" 카드 렌더 — needsReview 플래그가 붙은 거래 목록
+function renderReviewNeeded() {
+  const card = document.getElementById('l-review-card');
+  const body = document.getElementById('l-review-body');
+  if (!card || !body) return;
+  const ld = ledger();
+  const items = ld.txns.filter(t => t.needsReview);
+  if (!items.length) { card.style.display = 'none'; body.innerHTML = ''; return; }
+  card.style.display = '';
+
+  const catOpts = type => ld.categories.filter(c => c.type === (type === 'income' ? 'income' : 'expense'))
+    .map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+
+  body.innerHTML = `
+    <div style="overflow-x:auto;"><table style="min-width:560px;"><thead><tr>
+      <th>날짜</th><th>내용</th><th class="r">금액</th><th>카테고리</th><th>기본값</th><th></th>
+    </tr></thead><tbody>
+    ${items.map(t => {
+      const payKey = AMBIGUOUS_PAY.find(k => String(t.memo||'').includes(k)) || '';
+      return `<tr id="rv-${t.id}">
+        <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
+        <td style="font-size:12px;">${t.memo || '-'}</td>
+        <td class="r" style="font-family:var(--mono);font-size:12px;">${(t.amount||0).toLocaleString()}원</td>
+        <td><select id="rvcat-${t.id}" style="font-size:11px;padding:2px 4px;">${catOpts(t.type)}</select></td>
+        <td style="text-align:center;">${payKey
+          ? `<label style="font-size:10px;color:var(--text3);white-space:nowrap;"><input type="checkbox" id="rvdef-${t.id}" /> ${payKey} 항상</label>`
+          : ''}</td>
+        <td><button class="btn-sm btn-primary" onclick="resolveReview('${t.id}')">확인</button></td>
+      </tr>`;
+    }).join('')}
+    </tbody></table></div>`;
+
+  // 현재 카테고리 미리 선택
+  items.forEach(t => { const s = document.getElementById(`rvcat-${t.id}`); if (s && t.catId) s.value = t.catId; });
+}
+
+function resolveReview(txnId) {
+  const ld = ledger();
+  const t = ld.txns.find(x => x.id === txnId);
+  if (!t) return;
+  const newCat = document.getElementById(`rvcat-${txnId}`)?.value || t.catId || null;
+  const oldAmount = t.amount, oldCat = t.catId;
+  // 카테고리가 바뀌었으면 반영 (잔액엔 영향 없음 — 카테고리만)
+  t.catId = newCat;
+  delete t.needsReview;
+  // "이 결제 대행사는 항상 이 카테고리로" 저장
+  const defChk = document.getElementById(`rvdef-${txnId}`);
+  if (defChk && defChk.checked) {
+    const payKey = AMBIGUOUS_PAY.find(k => String(t.memo||'').includes(k));
+    if (payKey) { ld.payDefaultCat = ld.payDefaultCat || {}; ld.payDefaultCat[payKey] = newCat; }
+  }
+  save();
+  renderReviewNeeded();
+  renderLedgerTxnList();
+}
+
 function renderLedgerTxnList() {
+  renderReviewNeeded();
   const ld = ledger();
   const month = document.getElementById('l-list-month')?.value || '';
   const typeF  = document.getElementById('l-list-type')?.value  || '';
@@ -5837,11 +5912,19 @@ function applyOneEmailRow(r, acctId, catId, i) {
   const ld = ledger();
   const type = r.type || (r.amount<0 ? 'income' : 'expense');
   const amount = Math.abs(r.amount);
+  // 네이버페이·쿠팡 등: 뭘 샀는지 불명확 → "확인 필요" 로 표시. 저장된 기본 카테고리가 있으면 미리 채움.
+  const ambig = type === 'expense' && isAmbiguousPay(r.merchant);
+  if (ambig) {
+    const payKey = AMBIGUOUS_PAY.find(k => String(r.merchant||'').includes(k));
+    const def = payKey && (ld.payDefaultCat || {})[payKey];
+    if (def && ld.categories.some(c => c.id === def)) catId = def;
+  }
   ld.txns.push({
     id:'lt_email_'+Date.now()+'_'+(i||0)+'_'+Math.random().toString(36).slice(2,6),
     date:r.date, type, catId: catId||null, acctId, toAcctId:null,
     amount, memo:r.merchant||'', imported:true, fromEmail:true,
     ...(r.balance != null ? { adjustTarget: r.balance } : {}), // 은행이 알려준 실 잔액 = 이 시점 기준
+    ...(ambig ? { needsReview: true } : {}),
   });
   updateLedgerAcctBalance(acctId, type==='expense' ? -amount : amount);
   applyReportedBalance(acctId, r.balance);
