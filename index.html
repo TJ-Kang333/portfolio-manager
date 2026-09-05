@@ -169,6 +169,14 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
     <label>그룹</label>
     <select id="dash-group" class="month-select" onchange="setActiveGroup(this.value)" style="font-size:12px;padding:4px 8px;"></select>
   </div>
+  <!-- 0) 순자산 — 가계부(은행/카드/대출) + 주식 + 코인 전체 합산 -->
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-head"><span class="card-title">순자산</span>
+      <span style="font-size:11px;color:var(--text3);">가계부 계좌(은행·카드·대출) + 주식 평가액 + 코인 평가액</span>
+    </div>
+    <div id="networth-body"></div>
+  </div>
+
   <div class="metrics" id="dash-metrics"></div>
 
   <!-- 1) 총 자산 추이 (이력에서 이동) -->
@@ -1775,7 +1783,57 @@ function setActiveGroup(id) {
   save(); renderDashboard();
 }
 
+// 순자산 = 가계부 계좌 합(은행 +, 카드/대출 -는 이미 그렇게 저장돼 있음) + 최신 월 주식 평가액 + 최신 월 코인 평가액
+function computeNetWorth() {
+  const ld = ledger();
+  const ledgerNet = (ld.accounts || []).reduce((s, a) => s + (a.balance || 0), 0);
+
+  const months = sortedMonths();
+  const latestMonth = months[months.length - 1] || null;
+  let stockTotal = 0;
+  if (latestMonth && S.months[latestMonth]) {
+    Object.values(S.months[latestMonth]).forEach(acct => {
+      Object.values(acct).forEach(h => { stockTotal += h.balance || 0; });
+    });
+  }
+
+  const cryptoEntries = Object.values(S.cryptoEntries || {});
+  const cryptoMonths = [...new Set(cryptoEntries.map(e => e.month))].sort();
+  const latestCryptoMonth = cryptoMonths[cryptoMonths.length - 1] || null;
+  const cryptoTotal = cryptoEntries
+    .filter(e => e.month === latestCryptoMonth)
+    .reduce((s, e) => s + (e.krw || 0), 0);
+
+  return {
+    ledgerNet, stockTotal, cryptoTotal, latestMonth, latestCryptoMonth,
+    total: ledgerNet + stockTotal + cryptoTotal,
+  };
+}
+
+function renderNetWorth() {
+  const el = document.getElementById('networth-body');
+  if (!el) return;
+  const nw = computeNetWorth();
+  const row = (label, val, sub) => `
+    <div style="display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;">
+      <span style="font-size:12px;color:var(--text2);">${label}${sub ? ` <span style="color:var(--text3);">${sub}</span>` : ''}</span>
+      <span style="font-family:var(--mono);font-size:13px;color:${val<0?'var(--neg)':'var(--text)'};">${val<0?'-':''}${Math.abs(val).toLocaleString()}원</span>
+    </div>`;
+  el.innerHTML = `
+    <div style="font-size:26px;font-weight:600;font-family:var(--mono);margin-bottom:8px;">${nw.total.toLocaleString()}원</div>
+    <div style="border-top:1px solid var(--border2);padding-top:6px;">
+      ${row('가계부 계좌 (은행·카드·대출 합)', nw.ledgerNet)}
+      ${row('미래에셋 주식', nw.stockTotal, nw.latestMonth ? `(${nw.latestMonth})` : '(데이터 없음)')}
+      ${row('OKX 코인', nw.cryptoTotal, nw.latestCryptoMonth ? `(${nw.latestCryptoMonth})` : '(데이터 없음)')}
+    </div>
+    <div style="font-size:11px;color:var(--text3);margin-top:8px;">
+      은행 잔고는 가계부 계좌 잔액 기준 — 실제 은행 잔액과 어긋나면 가계부 거래 내역에서 "잔액조정"으로 맞출 수 있음.
+      대출은 가계부에 유형 "대출/부채"로 계좌를 만들어 현재 잔액을 넣어두면 여기 자동 반영됨(음수로 저장돼 순자산에서 빠짐).
+    </div>`;
+}
+
 function renderDashboard() {
+  renderNetWorth();
   const ms=sortedMonths();
   const sel=document.getElementById('dash-month');
   const prev=sel.value;
