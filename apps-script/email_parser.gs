@@ -23,7 +23,9 @@ const ALERT_DONE_LABEL   = 'finalert-done';    // 파싱 완료
 const ALERT_REVIEW_LABEL = 'finalert-review';  // 파서가 인식 못함 — 수동 확인 필요
 const TXN_SHEET_NAME     = '가계부거래';
 // 컬럼: A날짜 B유형 C가맹점 D금액 E출처 F원문 G해시(중복방지) H상태('' | 'done') I시각(ISO, 이체 매칭용)
-const ALERT_HEADER = ['날짜', '유형', '가맹점', '금액', '출처', '원문', '해시', '상태', '시각'];
+// J열(잔액): 은행 알림에 실제 잔액이 같이 오면 기록 — 앱이 가계부 계좌 잔액을
+// 누적(더하기/빼기) 대신 이 값으로 덮어써서, 놓친 알림 때문에 생기는 오차를 매번 바로잡음.
+const ALERT_HEADER = ['날짜', '유형', '가맹점', '금액', '출처', '원문', '해시', '상태', '시각', '잔액'];
 
 // ── 설치: 5분 트리거 생성 (편집기에서 1회 실행) ───────────
 function setupFinanceAlertTrigger() {
@@ -64,7 +66,8 @@ function parseFinanceAlerts() {
         if (rec && rec.skip) return;      // 인식했으나 기록 대상 아님(결제 실패 등)
         if (!rec) { anyFail = true; return; }
         if (hashes.has(rec.hash)) return; // 중복 스킵
-        sheet.appendRow([rec.date, rec.type, rec.merchant, rec.amount, rec.source, rec.raw, rec.hash, '', msg.getDate().toISOString()]);
+        sheet.appendRow([rec.date, rec.type, rec.merchant, rec.amount, rec.source, rec.raw, rec.hash, '',
+                         msg.getDate().toISOString(), rec.balance != null ? rec.balance : '']);
         hashes.add(rec.hash);
         if (rec.balance != null) appendBankSnapshot(rec.source, rec.balance, msg.getDate().toISOString());
       });
@@ -103,13 +106,14 @@ function ingestAlertText(rawText, sourceHint) {
     const hashes = getExistingHashes(sheet);
     const isDup  = hashes.has(rec.hash);
     if (!isDup) {
-      sheet.appendRow([rec.date, rec.type, rec.merchant, rec.amount, rec.source, rec.raw, rec.hash, '', ts]);
+      sheet.appendRow([rec.date, rec.type, rec.merchant, rec.amount, rec.source, rec.raw, rec.hash, '',
+                       ts, rec.balance != null ? rec.balance : '']);
     }
     // 은행 알림처럼 잔액이 같이 온 경우 — 거래 중복 여부와 별개로 자산 스냅샷은 남김
     if (rec.balance != null) appendBankSnapshot(rec.source, rec.balance, ts);
     if (isDup) return { ok: true, duplicate: true };
     return { ok: true, added: true, lockless: !locked,
-             row: { date: rec.date, type: rec.type, amount: rec.amount, merchant: rec.merchant, source: rec.source } };
+             row: { date: rec.date, type: rec.type, amount: rec.amount, merchant: rec.merchant, source: rec.source, balance: rec.balance } };
   } finally {
     if (locked) lock.releaseLock();
   }

@@ -5818,6 +5818,14 @@ function resolveEmailAcct(r, ld, allowDefault) {
 }
 
 // 한 거래를 장부에 반영 (수동/자동 공용)
+// 은행 알림에 실제 잔액이 같이 왔으면, 누적 계산 대신 그 값으로 덮어써서 맞춘다.
+// 문자/알림을 몇 번 놓쳐서 생긴 오차가 다음 알림 때 자동으로 바로잡히게 됨.
+function applyReportedBalance(acctId, balance) {
+  if (balance == null) return;
+  const acc = ledger().accounts.find(a => a.id === acctId);
+  if (acc) acc.balance = balance;
+}
+
 function applyOneEmailRow(r, acctId, catId, i) {
   const ld = ledger();
   const type = r.type || (r.amount<0 ? 'income' : 'expense');
@@ -5828,6 +5836,7 @@ function applyOneEmailRow(r, acctId, catId, i) {
     amount, memo:r.merchant||'', imported:true, fromEmail:true,
   });
   updateLedgerAcctBalance(acctId, type==='expense' ? -amount : amount);
+  applyReportedBalance(acctId, r.balance);
   if (r.source) { ld.emailAcctMap = ld.emailAcctMap || {}; ld.emailAcctMap[r.source] = acctId; }
   const cat = ld.categories.find(c=>c.id===catId);
   if (cat?.name==='투자 이체' && type==='expense') {
@@ -5906,6 +5915,8 @@ function autoApplyEmailRows(rows) {
     });
     updateLedgerAcctBalance(fromAcct, -amount);
     updateLedgerAcctBalance(toAcct, amount);
+    applyReportedBalance(fromAcct, out.balance);
+    applyReportedBalance(toAcct, inn.balance);
     if (out.rowIndex != null) doneIdx.push(out.rowIndex);
     if (inn.rowIndex != null) doneIdx.push(inn.rowIndex);
     transferred++; applied += 2;
