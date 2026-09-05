@@ -205,41 +205,45 @@ function resolveDate(mm, dd, msgDate) {
 
 const ALERT_PARSERS = [
 
-  // ── 현대카드 승인/취소 SMS ────────────────────────────
-  //  [Web발신]
-  //  현대 MX Black 승인          ← "현대카드"가 아니라 "현대 <카드명>"으로 옴
-  //  강*준
-  //  77,950원 일시불
-  //  09/03 16:59
-  //  네이버페이
-  //  누적2,521,146원
-  //  (취소 문자는 2번째 줄이 "현대 MX Black 취소")
+  // ── 현대카드 승인/취소 — 문자·앱 알림 두 형식 다 지원 ──────
+  //  [문자]  [Web발신] / 현대 MX Black 승인 / 강*준 / 77,950원 일시불 /
+  //          09/03 16:59 / 네이버페이 / 누적2,521,146원
+  //  [앱알림] 쿠팡 / 41,530원 · 일반승인 / 강태준 님, 현대 MX Black 승인 일시불, 8/30 22:07 /
+  //          누적2,294,286원   ← 제목(첫 줄)이 곧 가맹점이라 오히려 더 깔끔
+  //  (취소는 문자="현대 MX Black 취소", 앱알림="일반취소"/"승인취소" — 둘 다 '취소' 포함)
   {
     name: '현대카드',
     srcKey: 'hyundai',
-    // 실제 문자는 "현대카드"가 아니라 "현대 MX Black" 식 → '현대' + 승인/취소 + '누적' 조합으로 식별
+    // '현대' + 승인/취소 + '누적' 조합으로 식별 (문자엔 "현대카드"가 아니라 "현대 MX Black"으로 옴)
     match: t => /현대/.test(t) && /(승인|취소)/.test(t) && /누적/.test(t),
     parse: (t, msgDate) => {
       const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
       const isCancel = /취소/.test(t);
 
-      // 금액 줄: '원' 포함 + 결제방식(일시불/할부) 포함. 없으면 '누적' 아닌 첫 금액 줄.
-      const amtLine = lines.find(l => /[\d,]+\s*원/.test(l) && /(일시불|개월|할부)/.test(l))
-                   || lines.find(l => /[\d,]+\s*원/.test(l) && !/누적/.test(l));
-      // '원' 앞의 숫자만 — "360,000원 3개월" 에서 뒤의 3 이 붙지 않도록
-      const am = amtLine && amtLine.match(/([\d,]+)\s*원/);
+      // 금액: '누적' 줄을 빼고 나서 나오는 첫 'N원' — 구분자가 문자와 앱알림에서 달라("·" 등)도
+      // 상관없이, 누적 줄만 아니면 거의 항상 첫 번째 금액이 승인 금액.
+      const withoutBal = t.replace(/누적[^\n]*/g, '');
+      const am = withoutBal.match(/([\d,]+)\s*원/);
       const amount = am ? parseInt(am[1].replace(/,/g, ''), 10) : 0;
 
-      // 날짜/시각: MM/DD HH:MM
-      const dm = t.match(/(\d{1,2})\/(\d{1,2})\s+\d{1,2}:\d{2}/);
-      const date = dm ? resolveDate(parseInt(dm[1], 10), parseInt(dm[2], 10), msgDate) : null;
+      // 날짜/시각: M/DD HH:MM 또는 MM/DD HH:MM (앱알림은 "8/30"처럼 0 없이 올 수 있음)
+      const dm = t.match(/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+      const date = dm ? resolveDate(parseInt(dm[1], 10), parseInt(dm[2], 10), msgDate)
+                       : Utilities.formatDate(msgDate || new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
 
-      // 가맹점: 날짜 줄 다음 줄부터 '누적' 나오기 전까지
+      // 가맹점: ① 문자 형식 — "MM/DD HH:MM" 단독 줄 다음부터 '누적' 전까지
       let merchant = '';
       const dIdx = lines.findIndex(l => /^\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}$/.test(l));
       if (dIdx >= 0) {
         for (let i = dIdx + 1; i < lines.length && !/^누적/.test(lines[i]); i++) {
           merchant = (merchant ? merchant + ' ' : '') + lines[i];
+        }
+      }
+      // ② 앱 알림 형식 — 못 찾았으면 첫 줄이 금액·승인·이름 언급이 아닌 경우 그게 가맹점(알림 제목)
+      if (!merchant) {
+        const first = lines[0] || '';
+        if (first && !/원/.test(first) && !/(승인|취소)/.test(first) && !/^\d/.test(first) && !/님,?$/.test(first)) {
+          merchant = first;
         }
       }
 
@@ -367,6 +371,16 @@ function _testParser() {
     현대카드_취소: [
       '[Web발신]', '현대 MX Black 취소', '강*준',
       '77,950원 일시불', '09/03 17:04', '네이버페이', '누적2,443,196원',
+    ].join('\n'),
+    현대카드_앱알림_승인: [
+      '쿠팡', '41,530원 · 일반승인',
+      '강태준 님, 현대 MX Black 승인 일시불, 8/30 22:07',
+      '누적2,294,286원',
+    ].join('\n'),
+    현대카드_앱알림_취소: [
+      '에스케이큰나무셀프주유소', '150,000원 · 일반취소',
+      '강태준 님, 현대 MX Black 승인취소 일시불, 8/30 17:12',
+      '누적2,176,370원',
     ].join('\n'),
     지역화폐_완료: [
       '결제 완료 1,100원', '씨유(CU) 광명역푸르지오점',
