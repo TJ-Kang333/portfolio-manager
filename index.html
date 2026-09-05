@@ -1813,6 +1813,7 @@ function computeNetWorth() {
 function renderNetWorth() {
   const el = document.getElementById('networth-body');
   if (!el) return;
+  try { recalcAllBalances(); } catch(e) {} // 가계부 화면과 같은 기준으로 계좌 잔액 맞춤
   const nw = computeNetWorth();
   const row = (label, val, sub) => `
     <div style="display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;">
@@ -4940,6 +4941,11 @@ function recalcAllBalances() {
     } else if (t.type === 'expense' || t.type === 'personal') {
       if (bal[t.acctId] !== undefined) bal[t.acctId] -= t.amount;
     }
+    // 은행 알림이 실 잔액을 준 거래는 그 시점 잔액을 기준값으로 고정 (전 구간 오차 리셋)
+    if (t.adjustTarget !== undefined && t.type !== 'adjust' && bal[t.acctId] !== undefined)
+      bal[t.acctId] = t.adjustTarget;
+    if (t.toAdjustTarget !== undefined && bal[t.toAcctId] !== undefined)
+      bal[t.toAcctId] = t.toAdjustTarget;
   }
 
   // 계좌 잔액 반영
@@ -5818,8 +5824,9 @@ function resolveEmailAcct(r, ld, allowDefault) {
 }
 
 // 한 거래를 장부에 반영 (수동/자동 공용)
-// 은행 알림에 실제 잔액이 같이 왔으면, 누적 계산 대신 그 값으로 덮어써서 맞춘다.
-// 문자/알림을 몇 번 놓쳐서 생긴 오차가 다음 알림 때 자동으로 바로잡히게 됨.
+// 은행 알림에 실제 잔액이 같이 왔으면 즉시 반영(화면용). 단, recalcAllBalances()가
+// 거래내역 기준으로 다시 덮어쓰므로, 실제로 값을 "고정"시키는 건 거래에 붙는
+// adjustTarget 필드임 (아래 applyOneEmailRow / autoApplyEmailRows + recalcAllBalances).
 function applyReportedBalance(acctId, balance) {
   if (balance == null) return;
   const acc = ledger().accounts.find(a => a.id === acctId);
@@ -5834,6 +5841,7 @@ function applyOneEmailRow(r, acctId, catId, i) {
     id:'lt_email_'+Date.now()+'_'+(i||0)+'_'+Math.random().toString(36).slice(2,6),
     date:r.date, type, catId: catId||null, acctId, toAcctId:null,
     amount, memo:r.merchant||'', imported:true, fromEmail:true,
+    ...(r.balance != null ? { adjustTarget: r.balance } : {}), // 은행이 알려준 실 잔액 = 이 시점 기준
   });
   updateLedgerAcctBalance(acctId, type==='expense' ? -amount : amount);
   applyReportedBalance(acctId, r.balance);
@@ -5912,6 +5920,8 @@ function autoApplyEmailRows(rows) {
       date: out.date, type: 'transfer', catId: null, acctId: fromAcct, toAcctId: toAcct,
       amount, memo: '계좌이체 자동인식 (' + out.source + ' → ' + inn.source + ')',
       imported: true, fromEmail: true,
+      ...(out.balance != null ? { adjustTarget: out.balance } : {}),   // 보내는 계좌 실 잔액
+      ...(inn.balance != null ? { toAdjustTarget: inn.balance } : {}), // 받는 계좌 실 잔액
     });
     updateLedgerAcctBalance(fromAcct, -amount);
     updateLedgerAcctBalance(toAcct, amount);
