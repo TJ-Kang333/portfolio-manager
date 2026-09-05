@@ -183,6 +183,9 @@ function parseAlert(text, msgDate, sourceHint) {
       r.source = r.source || p.name;
       r.raw    = text.slice(0, 500);
       r.merchant = (r.merchant || '').trim();
+      // 알림 원문의 시각(MM/DD HH:MM) — 같은 금액 거래를 하루에 두 번 해도 구분되도록 중복키에 포함.
+      // 같은 알림이 이메일+HTTP 로 두 번 와도 원문 시각은 같으니 여전히 중복 제거됨.
+      r.timeKey = (text.match(/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}/) || [''])[0];
       r.hash   = makeHash(r);
       return r;
     }
@@ -192,7 +195,7 @@ function parseAlert(text, msgDate, sourceHint) {
 }
 
 function makeHash(r) {
-  const key = [r.source, r.date, r.amount, (r.merchant || '').replace(/\s/g, ''), r.type].join('|');
+  const key = [r.source, r.date, r.timeKey || '', r.amount, (r.merchant || '').replace(/\s/g, ''), r.type].join('|');
   const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, key);
   return Utilities.base64EncodeWebSafe(digest).slice(0, 16);
 }
