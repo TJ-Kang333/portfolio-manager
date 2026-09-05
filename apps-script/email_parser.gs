@@ -343,20 +343,31 @@ function parseBankAlert(t, msgDate, sourceLabel) {
   const balM = t.match(/잔액\s*(-?[\d,]+)\s*원/);
   const balance = balM ? parseInt(balM[1].replace(/,/g, ''), 10) : null;
 
-  // 가맹점/상대방: 'A | B' 형태에서 금액/계좌번호처럼 보이는 부분을 빼면 남는 쪽.
-  // 은행마다 순서가 달라서("카카오페이 | 우리 1002…" vs "1,283,738 원 입금 | 강태준") 위치로 못 정함.
+  // 적요/상대방 뽑기 — 은행·형식마다 위치가 달라서 여러 패턴을 순서대로 시도.
+  // (잔액 뒷부분은 이미 잘라낸 withoutBal 기준으로 매칭)
   let merchant = '';
-  const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
-  const pipeLine = lines.find(l => l.includes('|'));
-  const looksLikeAcct = s => /^(우리|하나|국민|신한|농협|기업|카카오뱅크|토스뱅크)\s*[\d*]+/.test(s) || /^\d[\d*-]{5,}/.test(s);
-  const looksLikeAmt  = s => /원/.test(s) && /(입금|출금)/.test(s);
-  if (pipeLine) {
-    const parts = pipeLine.split('|').map(s => s.trim()).filter(Boolean);
-    merchant = parts.find(p => !looksLikeAcct(p) && !looksLikeAmt(p)) || parts[0] || '';
+  //  ① 우리WON뱅킹 팝업:  [출금] 하나생활비급여 100,000원 1002-644-...
+  let mm = withoutBal.match(/\[(?:입금|출금)\]\s*(\S.*?)\s+[\d,]+\s*원/);
+  //  ② 하나원큐 팝업:     입금 100,000원 생활비급여   (그 뒤 잔액은 잘려나감)
+  if (!mm) mm = withoutBal.match(/(?:입금|출금)\s+[\d,]+\s*원\s+(\S.*?)\s*$/m);
+  if (mm && mm[1]) {
+    merchant = mm[1].trim();
   } else {
-    const hi = lines.findIndex(l => /(입금|출금)/.test(l));
-    if (hi >= 0 && lines[hi + 1] && !/잔액/.test(lines[hi + 1])) merchant = lines[hi + 1];
+    //  ③ 'A | B' 형태 (예전 앱알림함 스타일)
+    const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
+    const pipeLine = lines.find(l => l.includes('|'));
+    const looksLikeAcct = s => /^(우리|하나|국민|신한|농협|기업|카카오뱅크|토스뱅크)\s*[\d*]+/.test(s) || /^\d[\d*-]{5,}/.test(s);
+    const looksLikeAmt  = s => /원/.test(s) && /(입금|출금)/.test(s);
+    if (pipeLine) {
+      const parts = pipeLine.split('|').map(s => s.trim()).filter(Boolean);
+      merchant = parts.find(p => !looksLikeAcct(p) && !looksLikeAmt(p)) || parts[0] || '';
+    } else {
+      const hi = lines.findIndex(l => /(입금|출금)/.test(l));
+      if (hi >= 0 && lines[hi + 1] && !/잔액/.test(lines[hi + 1])) merchant = lines[hi + 1];
+    }
   }
+  // 계좌번호/은행명만 남은 경우는 적요 없는 걸로
+  if (/^\d[\d*-]{4,}/.test(merchant) || /계좌$/.test(merchant)) merchant = '';
 
   return {
     type: isOut ? 'expense' : 'income',
@@ -397,27 +408,21 @@ function _testParser() {
       '결제 실패 12,000원', '경기지역화폐 결제를 지원하지 않는 매장이에요',
       '2026/09/01 13:53',
     ].join('\n'),
+    // 실제 팝업 알림 원문 (2026-09-05 확인)
     우리은행_출금: [
-      '출금 -31,366원', '카카오페이 | 우리 1002952535***', '2026.09.04(금) 13:38:51',
-    ].join('\n'),
-    우리은행_출금_잔액: [
-      '출금 -1,283,738원', '하나주담대원리금 | 우리 1002644889***',
-      '잔액 36,001,074원', '2026.09.03(목) 12:16:32',
+      '우리WON뱅킹 입출금알림',
+      '[출금] 하나생활비급여 100,000원 1002-644-889***계좌 잔액 35,901,074원 09/05 21:50:57',
     ].join('\n'),
     하나은행_입금: [
-      '449-******-25107', '1,283,738 원 입금 | 강태준', '12:16:30',
-    ].join('\n'),
-    하나은행_출금_잔액: [
-      '449-******-25107', '- 1,283,738 원 출금 | 1189800...',
-      '잔액 -1,283,738원', '18:17:40',
+      '하나은행',
+      '입금 100,000원 생활비급여    잔액 1,494,051원 09/05 21:50 118-******-72107',
     ].join('\n'),
     우리은행_광고: [
       '(광고)LCK 한정굿즈 사전응모', 'LCK 결승전 현장 수령', '당첨되고 편히 수령해요!',
     ].join('\n'),
   };
   // source 힌트를 강제해도(=forced) 광고는 걸러지는지까지 확인
-  const hints = { 우리은행_출금: 'woori', 우리은행_출금_잔액: 'woori', 우리은행_광고: 'woori',
-                  하나은행_입금: 'hana_bank', 하나은행_출금_잔액: 'hana_bank' };
+  const hints = { 우리은행_출금: 'woori', 우리은행_광고: 'woori', 하나은행_입금: 'hana_bank' };
   Object.keys(cases).forEach(k => {
     Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1), hints[k])));
   });
