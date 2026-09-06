@@ -191,6 +191,21 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
     <div style="position:relative;height:340px"><canvas id="dash-trend"></canvas></div>
   </div>
 
+  <!-- 1b) 일별 자산 추이 — Apps Script가 자동 수집한 '자산스냅샷' 시트 기반 -->
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-head">
+      <span class="card-title">일별 자산 추이 <span style="font-size:11px;font-weight:400;color:var(--text3);">자동 수집 · OKX/은행/주식</span></span>
+      <span style="display:flex;gap:8px;align-items:center;">
+        <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;">
+          <input type="checkbox" id="snap-stack" onchange="renderSnapshotTrend()" style="cursor:pointer;" /> 출처별 보기
+        </label>
+        <button class="btn-sm" onclick="loadSnapshotTrend(true)" title="자산스냅샷 시트를 다시 불러옵니다">⟳ 새로고침</button>
+      </span>
+    </div>
+    <div id="snap-trend-msg" style="font-size:11px;color:var(--text3);margin-bottom:6px;"></div>
+    <div style="position:relative;height:300px"><canvas id="snap-trend"></canvas></div>
+  </div>
+
   <!-- 2) 계좌별 잔고 -->
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head">
@@ -1736,7 +1751,8 @@ if (typeof ChartDataLabels !== 'undefined') {
   Chart.register(ChartDataLabels);
   Chart.defaults.plugins.datalabels = { display: false };
 }
-let allocCh=null, retCh=null, dashTrendCh=null;
+let allocCh=null, retCh=null, dashTrendCh=null, snapTrendCh=null;
+let _snapRows=null, _snapLoading=false;
 
 // 포트폴리오 필터 적용한 자산군별 잔고
 // 포트폴리오 + 그룹으로 계좌 필터링
@@ -1872,8 +1888,121 @@ function renderNetWorth() {
     </div>`;
 }
 
+// ── 일별 자산 추이 (자산스냅샷 시트) ─────────────────────────
+// Apps Script가 매일/거래마다 '자산스냅샷' 시트에 남긴 출처별 잔액을 불러와,
+// 출처별로 "마지막 값 이어가기(LOCF)" 후 날짜별로 합산해 순자산 실측 추이를 그린다.
+const SNAP_SRC_COLOR = {
+  'OKX':'#8E44AD', '미래에셋증권(주식)':'#1D6FC4',
+  '우리은행':'#1D9E75', '하나은행':'#149E9E',
+  '현대카드':'#B83232', '경기지역화폐':'#BA7517',
+};
+function _snapColor(src){ return SNAP_SRC_COLOR[src] || '#8A8F98'; }
+
+async function loadSnapshotTrend(force){
+  const msg = document.getElementById('snap-trend-msg');
+  if (!GAS_URL){ if(msg) msg.textContent='Sheets 연동 URL을 설정하면 자동 수집된 추이가 표시됩니다.'; return; }
+  if (_snapLoading) return;
+  if (_snapRows && !force){ renderSnapshotTrend(); return; }
+  _snapLoading = true;
+  if (msg) msg.textContent = '불러오는 중…';
+  try {
+    const d = await gasRequest(GAS_URL + '?action=load_snapshots');
+    const rows = (d && d.rows) || [];
+    _snapRows = rows.filter(r => r.krw != null && !/ERROR/i.test(r.detail || ''));
+    const srcs = [...new Set(_snapRows.map(r => r.source))];
+    if (msg) msg.textContent = _snapRows.length
+      ? `${_snapRows.length}건 · 출처 ${srcs.length}종 (${srcs.join(', ')})`
+      : '아직 수집된 스냅샷이 없습니다. OKX·은행·주식 자동 수집이 돌면 채워집니다.';
+    renderSnapshotTrend();
+  } catch(e){
+    if (msg) msg.textContent = '불러오기 실패: ' + e.message;
+  } finally {
+    _snapLoading = false;
+  }
+}
+
+// rows → {days:[YYYY-MM-DD], totals:[n], bySource:{src:[n]}}
+function buildSnapshotSeries(rows){
+  const bySrc = {};                       // src -> [{day, krw}] (하루 여러건이면 마지막 값)
+  rows.forEach(r => {
+    const day = String(r.ts || '').slice(0,10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return;
+    (bySrc[r.source] = bySrc[r.source] || []).push({ day, krw: r.krw });
+  });
+  const sources = Object.keys(bySrc);
+  sources.forEach(s => {
+    bySrc[s].sort((a,b) => a.day < b.day ? -1 : a.day > b.day ? 1 : 0);
+    const m = new Map();
+    bySrc[s].forEach(p => m.set(p.day, p.krw)); // 같은 날 마지막 값이 남음
+    bySrc[s] = [...m.entries()].map(([day,krw]) => ({day,krw}));
+  });
+  // 관측된 모든 날짜 + 오늘
+  const daySet = new Set();
+  sources.forEach(s => bySrc[s].forEach(p => daySet.add(p.day)));
+  daySet.add(new Date().toISOString().slice(0,10));
+  const days = [...daySet].sort();
+  // 출처별 LOCF
+  const bySource = {}, totals = days.map(()=>0);
+  sources.forEach(s => {
+    const pts = bySrc[s];
+    let i = 0, last = null;
+    bySource[s] = days.map(dy => {
+      while (i < pts.length && pts[i].day <= dy){ last = pts[i].krw; i++; }
+      return last;                          // 첫 관측 전에는 null (합산 제외)
+    });
+    bySource[s].forEach((v,idx) => { if (v != null) totals[idx] += v; });
+  });
+  return { days, totals, bySource, sources };
+}
+
+function renderSnapshotTrend(){
+  const cv = document.getElementById('snap-trend'); if (!cv) return;
+  if (snapTrendCh){ snapTrendCh.destroy(); snapTrendCh = null; }
+  if (!_snapRows || !_snapRows.length) return;
+  const { days, totals, bySource, sources } = buildSnapshotSeries(_snapRows);
+  const labels = days.map(d => d.slice(5).replace('-','/'));
+  const stack = document.getElementById('snap-stack')?.checked;
+
+  let datasets;
+  if (stack){
+    datasets = sources.map(s => ({
+      label: s,
+      data: bySource[s].map(v => v == null ? null : v),
+      borderColor: _snapColor(s),
+      backgroundColor: _snapColor(s) + '33',
+      fill: true, tension: 0, pointRadius: 0, borderWidth: 1.5,
+      spanGaps: true,
+    }));
+  } else {
+    datasets = [{
+      label: '순자산(실측)', data: totals,
+      borderColor: '#1D6FC4', backgroundColor: 'rgba(29,111,196,.08)',
+      fill: true, tension: 0, pointRadius: 2, pointHoverRadius: 5, borderWidth: 2,
+    }];
+  }
+
+  snapTrendCh = new Chart(cv, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: stack, labels:{ font:{size:10}, boxWidth:12 } },
+        datalabels: { display: false },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fKRWfull(c.parsed.y)}` } },
+      },
+      scales: {
+        y: { stacked: stack, ticks: { callback: v => fKRW(v), font:{size:11} } },
+        x: { ticks: { autoSkip:true, maxTicksLimit:12, maxRotation:0, font:{size:10} } },
+      },
+    },
+  });
+}
+
 function renderDashboard() {
   renderNetWorth();
+  loadSnapshotTrend(false);
   const ms=sortedMonths();
   const sel=document.getElementById('dash-month');
   const prev=sel.value;
