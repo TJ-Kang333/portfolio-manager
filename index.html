@@ -412,9 +412,11 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
           <select id="hist-manual-acct"></select></div>
         <div class="fg" style="width:160px;"><label style="font-size:11px;color:var(--text3);">그 달 말 잔고 (원)</label>
           <input type="text" inputmode="numeric" id="hist-manual-amt" placeholder="예: 12,000,000" oninput="formatDepInput(this)" /></div>
+        <button class="btn-sm" id="hist-fill-btn" onclick="histFillFromHoldings()" title="선택한 계좌의 현재 보유종목 수량 × 그 달 말 시세로 금액을 자동 계산 (매매가 없었던 계좌에만 정확)">📅 보유종목 시세로 계산</button>
         <button class="btn btn-primary" onclick="addManualMonthBalance()">저장</button>
         <span id="hist-manual-msg" style="font-size:12px;color:var(--pos);"></span>
       </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:6px;">＊ "보유종목 시세로 계산"은 그 사이 매매가 없어 수량이 그대로일 때만 정확합니다 (예: 자녀 계좌).</div>
     </div>
     <div style="overflow-x:auto;">
       <table style="min-width:100%;">
@@ -2097,6 +2099,12 @@ function renderDashboard() {
   // 자녀 자산 계산 (전체 모드일 때만)
   const cTotal = (!pfId && month) ? childTotal(month) : 0;
   const hasChild = cTotal > 0;
+  // 자녀 자산 전월 대비 수익률 (순자산엔 안 들어가지만 자녀 계좌 흐름은 따로 보여줌)
+  let cReturn = null;
+  if (hasChild) {
+    const _cms = sortedMonths(), _ci = _cms.indexOf(month);
+    if (_ci > 0) { const _pc = childTotal(_cms[_ci - 1]); if (_pc > 0) cReturn = (cTotal - _pc) / _pc * 100; }
+  }
 
   // metrics grid — 자녀 자산 블럭 있으면 6칸, 없으면 5칸
   if (hasChild) {
@@ -2104,8 +2112,8 @@ function renderDashboard() {
     document.getElementById('dash-metrics').innerHTML=`
       <div class="metric"><div class="metric-label">${labelTitle}</div><div class="metric-value">${fKRWfull(total)}</div></div>
       <div class="metric" style="border:1px solid rgba(142,68,173,.3);background:#FAF5FF;">
-        <div class="metric-label" style="color:#8E44AD;">👶 자녀 자산</div>
-        <div class="metric-value" style="color:#8E44AD;font-size:18px;">${fKRWfull(cTotal)}</div>
+        <div class="metric-label" style="color:#8E44AD;">👶 자녀 자산 <span style="font-size:10px;font-weight:400;">(순자산 제외)</span></div>
+        <div class="metric-value" style="color:#8E44AD;font-size:18px;">${fKRWfull(cTotal)}${cReturn===null?'':` <span style="font-size:11px;font-weight:500;">전월 ${fPct(cReturn)}</span>`}</div>
       </div>
       <div class="metric"><div class="metric-label">이번 달 수익률</div><div class="metric-value ${mr===null?'':mr>=0?'pos':'neg'}">${mr===null?'-':fPct(mr)}</div></div>
       <div class="metric"><div class="metric-label">올해 수익률</div><div class="metric-value ${yearR===null?'':yearR>=0?'pos':'neg'}">${yearR===null?'-':fPct(yearR)}</div></div>
@@ -3690,8 +3698,10 @@ const MANUAL_MONTH_KEY = '_수동월말잔고';
 function populateHistManualForm() {
   const sel = document.getElementById('hist-manual-acct');
   if (sel) {
+    const prev = sel.value;
     sel.innerHTML = '<option value="_수동">합계 (계좌 구분 없음)</option>' +
-      (S.accounts || []).map(a => `<option value="${a.acctNo}">${a.name}${a.nickname ? ' ('+a.nickname+')' : ''}</option>`).join('');
+      (S.accounts || []).map(a => `<option value="${a.acctNo}">${a.name}${a.nickname ? ' ('+a.nickname+')' : ''}${a.isChild ? ' 👶' : ''}</option>`).join('');
+    if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
   }
   const mEl = document.getElementById('hist-manual-month');
   if (mEl && !mEl.value) {
@@ -3723,6 +3733,54 @@ function addManualMonthBalance() {
   const amtEl = document.getElementById('hist-manual-amt'); if (amtEl) amtEl.value = '';
   renderHistory();
   try { renderDashboard(); } catch (e) {}
+}
+
+// 선택 계좌의 현재 보유종목 수량 × 그 달 말 과거 시세로 금액칸을 채운다.
+// (매매가 없어 수량이 그대로인 계좌 — 예: 자녀 계좌 — 에서만 정확)
+async function histFillFromHoldings() {
+  const month = document.getElementById('hist-manual-month')?.value;
+  const acct  = document.getElementById('hist-manual-acct')?.value;
+  const msg   = document.getElementById('hist-manual-msg');
+  const setMsg = (t, ok) => { if (msg) { msg.style.color = ok ? 'var(--pos)' : 'var(--neg)'; msg.textContent = t; } };
+  if (!GAS_URL) return setMsg('Sheets 연동 URL을 먼저 설정하세요', false);
+  if (!month)   return setMsg('월을 선택하세요', false);
+  if (!acct || acct === '_수동') return setMsg('특정 계좌를 선택하세요 ("합계"는 시세 계산 불가)', false);
+
+  // 수량이 저장된 가장 최근 월의 이 계좌 보유종목
+  const ms = sortedMonths();
+  let holdings = null;
+  for (let i = ms.length - 1; i >= 0; i--) {
+    const ad = S.months[ms[i]] && S.months[ms[i]][acct];
+    if (ad && Object.values(ad).some(h => h && h.qty > 0)) { holdings = ad; break; }
+  }
+  if (!holdings) return setMsg('이 계좌에 수량이 저장된 보유종목이 없습니다 (CSV로 먼저 가져오세요)', false);
+  const qtyBy = {};
+  Object.entries(holdings).forEach(([tk, h]) => { if (h && h.qty > 0) qtyBy[tk] = h.qty; });
+  const tickers = Object.keys(qtyBy);
+
+  const [y, m] = month.split('-').map(Number);
+  const dateStr = `${month}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`; // 그 달 말일
+
+  setMsg('시세 조회 중…', true);
+  try {
+    const d = await gasRequest(GAS_URL + '?action=hist_prices&date=' + dateStr +
+                               '&tickers=' + encodeURIComponent(tickers.join(',')));
+    if (!d || !d.ok) throw new Error((d && d.error) || '응답 오류');
+    const prices = d.prices || {};
+    let total = 0, got = 0; const miss = [];
+    tickers.forEach(tk => {
+      if (prices[tk]) { total += qtyBy[tk] * prices[tk]; got++; }
+      else miss.push((holdings[tk] && holdings[tk].name) || tk);
+    });
+    if (!got) return setMsg('해당 날짜 시세를 하나도 받지 못했습니다', false);
+    total = Math.round(total);
+    const amtEl = document.getElementById('hist-manual-amt');
+    if (amtEl) amtEl.value = total.toLocaleString();
+    setMsg(`✓ ${dateStr} 시세로 ${total.toLocaleString()}원 (${got}/${tickers.length}종목)` +
+           (miss.length ? ` · 누락: ${miss.join(', ')}` : '') + ' — 확인 후 저장', true);
+  } catch (e) {
+    setMsg('시세 조회 실패: ' + e.message, false);
+  }
 }
 
 // ── ASSETS ─────────────────────────────────────────────────

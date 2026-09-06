@@ -75,6 +75,84 @@ function stockPricesResponse(tickersParam) {
   return { ok: true, ts: new Date().toISOString(), prices };
 }
 
+// ── 특정 날짜 과거 시세 ──────────────────────────────────────
+//  자녀 계좌처럼 과거 특정일(월말) 잔고를 "현재 보유수량 × 그 날 종가"로 역산할 때 사용.
+//  dateStr 'YYYY-MM-DD' 이전(포함) 가장 최근 거래일 종가를 원화로 돌려준다.
+//  doGet ?action=hist_prices&date=2026-07-31&tickers=069500,TSLA
+function histPricesResponse(dateParam, tickersParam) {
+  const date = String(dateParam || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, error: '날짜 형식은 YYYY-MM-DD' };
+  const tickers = String(tickersParam || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!tickers.length) return { ok: false, error: '조회할 종목이 없습니다' };
+  return { ok: true, date: date, prices: fetchHistPricesKRW(tickers, date) };
+}
+
+function fetchHistPricesKRW(tickerList, dateStr) {
+  const uniq = [...new Set((tickerList || []).map(t => String(t || '').trim()).filter(Boolean))];
+  const target = new Date(dateStr + 'T00:00:00Z');
+  if (isNaN(target)) return {};
+  const rate = _yahooCloseOn('KRW=X', target) || _usdKrw(); // 과거 환율, 실패 시 현재 환율
+  const out = {};
+  uniq.forEach(t => {
+    let v = null;
+    if (isDomesticTicker(t)) {
+      v = _krHistClose(t, target);
+    } else {
+      const usd = _yahooCloseOn(t, target);
+      if (usd != null) v = rate ? Math.round(usd * rate * 100) / 100 : usd;
+    }
+    if (v != null) out[t] = v;
+  });
+  return out;
+}
+
+// 네이버 일별 시세 — [target-25일, target] 창에서 target 이하 마지막 종가
+function _krHistClose(code, target) {
+  try {
+    const end   = _ymdCompact(target);
+    const start = _ymdCompact(new Date(target.getTime() - 25 * 864e5));
+    const url = 'https://api.finance.naver.com/siseJson.naver?symbol=' + encodeURIComponent(code) +
+                '&requestType=1&startTime=' + start + '&endTime=' + end + '&timeframe=day';
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const arr = JSON.parse(res.getContentText().replace(/'/g, '"')); // [ [헤더], ["20260731",시,고,저,종,거래량,...], ... ]
+    for (let i = arr.length - 1; i >= 1; i--) {
+      const row = arr[i];
+      if (row && row[0] && String(row[0]) <= end && typeof row[4] === 'number') return row[4];
+    }
+  } catch (e) {}
+  return null;
+}
+
+// Yahoo 차트 일봉 — target 이전(포함) 마지막 종가. KRW=X 환율에도 재사용.
+function _yahooCloseOn(symbol, target) {
+  try {
+    const cut = Math.floor(target.getTime() / 1000) + 86400; // 그 날 끝까지 포함
+    const p1  = cut - 35 * 86400;
+    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) +
+                '?period1=' + p1 + '&period2=' + cut + '&interval=1d';
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const j = JSON.parse(res.getContentText());
+    const r = j && j.chart && j.chart.result && j.chart.result[0];
+    if (!r || !r.timestamp || !r.indicators || !r.indicators.quote) return null;
+    const closes = r.indicators.quote[0].close || [];
+    for (let i = r.timestamp.length - 1; i >= 0; i--) {
+      if (r.timestamp[i] <= cut && typeof closes[i] === 'number') return closes[i];
+    }
+  } catch (e) {}
+  return null;
+}
+
+function _ymdCompact(d) {
+  return d.getUTCFullYear() +
+    String(d.getUTCMonth() + 1).padStart(2, '0') +
+    String(d.getUTCDate()).padStart(2, '0');
+}
+
+// 편집기 점검용
+function _testHistPrices() {
+  Logger.log(JSON.stringify(histPricesResponse('2026-07-31', '069500,TSLA'), null, 2));
+}
+
 // ── 일 단위 자동 스냅샷 ────────────────────────────────────
 // state(구글시트)를 읽기만 하고(=쓰지 않음) 최신 월의 qty 보유 종목을 오늘 시세로
 // 재평가해 자산스냅샷에 한 줄 남긴다. state 자체는 안 건드려서(app 의 저장/동기화와
