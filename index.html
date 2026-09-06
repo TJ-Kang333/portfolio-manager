@@ -172,7 +172,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
   <!-- 0) 순자산 — 가계부(은행/카드/대출) + 주식 + 코인 전체 합산 -->
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head"><span class="card-title">순자산</span>
-      <span style="font-size:11px;color:var(--text3);">가계부 계좌(은행·카드·대출) + 주식 평가액 + 코인 평가액</span>
+      <span style="font-size:11px;color:var(--text3);">가계부 자산 − 부채 + 주식 평가액 + 코인 평가액</span>
     </div>
     <div id="networth-body"></div>
   </div>
@@ -1854,7 +1854,14 @@ function setActiveGroup(id) {
 // 순자산 = 가계부 계좌 합(은행 +, 카드/대출 -는 이미 그렇게 저장돼 있음) + 최신 월 주식 평가액 + 최신 월 코인 평가액
 function computeNetWorth() {
   const ld = ledger();
-  const ledgerNet = (ld.accounts || []).reduce((s, a) => s + (a.balance || 0), 0);
+  // 가계부 계좌를 자산(+)/부채(-)로 분리: 대출 유형이거나 잔액이 음수면 부채
+  let ledgerAsset = 0, ledgerDebt = 0;
+  (ld.accounts || []).forEach(a => {
+    const b = a.balance || 0;
+    if (a.type === 'loan' || b < 0) ledgerDebt += b;   // 음수 누적
+    else ledgerAsset += b;
+  });
+  const ledgerNet = ledgerAsset + ledgerDebt;
 
   const months = sortedMonths();
   const latestMonth = months[months.length - 1] || null;
@@ -1876,7 +1883,8 @@ function computeNetWorth() {
     .reduce((s, e) => s + (e.krw || 0), 0);
 
   return {
-    ledgerNet, stockTotal, cryptoTotal, childStockTotal, latestMonth, latestCryptoMonth,
+    ledgerNet, ledgerAsset, ledgerDebt, stockTotal, cryptoTotal, childStockTotal,
+    latestMonth, latestCryptoMonth,
     total: ledgerNet + stockTotal + cryptoTotal,   // 자녀 계좌 제외
   };
 }
@@ -1896,7 +1904,8 @@ function renderNetWorth() {
     <div style="font-size:26px;font-weight:600;font-family:var(--mono);margin-bottom:8px;">${nw.total.toLocaleString()}원</div>
     ${reviewCnt ? `<div style="margin-bottom:8px;"><a href="#" onclick="showPage('ledger');showLedgerTab('txn');return false;" style="font-size:12px;color:#B9770E;text-decoration:none;">⚠️ 확인 필요한 거래 ${reviewCnt}건 — 가계부에서 카테고리 확인 →</a></div>` : ''}
     <div style="border-top:1px solid var(--border2);padding-top:6px;">
-      ${row('가계부 계좌 (은행·카드·대출·기타)', nw.ledgerNet)}
+      ${row('가계부 자산 (은행·현금·기타)', nw.ledgerAsset)}
+      ${nw.ledgerDebt < 0 ? row('가계부 부채 (카드·대출)', nw.ledgerDebt) : ''}
       ${row('미래에셋 주식', nw.stockTotal, nw.latestMonth ? `(${nw.latestMonth})` : '(데이터 없음)')}
       ${row('OKX 코인', nw.cryptoTotal, nw.latestCryptoMonth ? `(${nw.latestCryptoMonth})` : '(데이터 없음)')}
     </div>
