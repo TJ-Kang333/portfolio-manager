@@ -1578,6 +1578,33 @@ function monthDeposit(month) {
   return unitTotal > 0 ? unitTotal : (d._total || 0);
 }
 
+// ── 배당·이자(투자 수익) 연계 ─────────────────────────────
+// 가계부에서 카테고리가 "투자 수익"인 수입 거래 = 배당금/예금이자 등.
+// 자산관리 쪽 잔고(S.months)엔 안 잡히므로(대개 은행 계좌로 빠짐) 수익률 계산에서 따로 더해준다.
+function _isInvestIncomeTxn(ld, t) {
+  if (!t || t.type !== 'income') return false;
+  if (t.catId === 'lc_invest_in') return true;
+  const c = ld.categories.find(x => x.id === t.catId);
+  return !!c && c.name === '투자 수익';
+}
+// 그 달 배당·이자 총액 (표시용)
+function investIncomeMonth(month) {
+  const ld = S.ledger; if (!ld || !ld.txns) return 0;
+  return ld.txns.reduce((s, t) =>
+    (_isInvestIncomeTxn(ld, t) && (t.date || '').slice(0, 7) === month)
+      ? s + (Math.abs(t.amount) || 0) : s, 0);
+}
+// 그 달 배당·이자 중 투자계좌(포트폴리오 연결)에 안 들어온 것 = 수익률 보정에 더할 금액
+function investIncomeSwept(month) {
+  const ld = S.ledger; if (!ld || !ld.txns) return 0;
+  return ld.txns.reduce((s, t) => {
+    if (!_isInvestIncomeTxn(ld, t) || (t.date || '').slice(0, 7) !== month) return s;
+    const acc = ld.accounts.find(a => a.id === t.acctId);
+    if (acc && acc.pfAcctNo) return s; // 투자계좌로 재유입 → 이미 잔고에 반영됨
+    return s + (Math.abs(t.amount) || 0);
+  }, 0);
+}
+
 function unitDeposit(month, pfId, groupId) {
   const d = S.deposits && S.deposits[month];
   if (!d) return 0;
@@ -1662,8 +1689,9 @@ function monthReturn(month) {
   if(idx<=0) return null;
   const prev=ms[idx-1], curT=monthTotal(month), prevT=monthTotal(prev);
   const added=monthDeposit(month);
+  const swept=investIncomeSwept(month); // 배당·이자로 났지만 잔고 밖으로 빠진 수익 → 되더함
   if(prevT+added===0) return null;
-  return (curT-prevT-added)/(prevT+added)*100;
+  return (curT+swept-prevT-added)/(prevT+added)*100;
 }
 function assetReturn(month, assetId) {
   // 자산군별 수익률은 입금액 분배가 어려우므로 잔고 기준 단순 계산
@@ -1883,10 +1911,11 @@ function renderDashboard() {
   const mr = month ? monthReturn(month) : null;
   const ms0 = sortedMonths(), firstT = ms0.length ? pfTotal(ms0[0], pfId, groupId) : 0;
   const monthIdx = month ? ms0.indexOf(month) : -1;
-  let cumDeposit = 0;
-  if (monthIdx > 0) for (let i=1; i<=monthIdx; i++) cumDeposit += monthDeposit(ms0[i]);
+  let cumDeposit = 0, cumSwept = 0;
+  if (monthIdx > 0) for (let i=1; i<=monthIdx; i++) { cumDeposit += monthDeposit(ms0[i]); cumSwept += investIncomeSwept(ms0[i]); }
   const baseAmt = firstT + cumDeposit;
-  const cumR = baseAmt>0 && total>0 ? (total-baseAmt)/baseAmt*100 : null;
+  // 배당·이자 보정은 전체 자산 화면에서만 (개별 포트폴리오엔 배분 불가)
+  const cumR = baseAmt>0 && total>0 ? (total + (pfId?0:cumSwept) - baseAmt)/baseAmt*100 : null;
 
   const filteredAccts = filteredAcctNos(pfId, groupId);
   const acctCount = filteredAccts.length;
@@ -1909,7 +1938,9 @@ function renderDashboard() {
       ? pfTotal(prevYearMs.at(-1), pfId, groupId)
       : firstYearTotal;
     if (baseYearTotal > 0 && total > 0) {
-      yearR = (total - baseYearTotal) / baseYearTotal * 100;
+      let yearSwept = 0;
+      if (!pfId) yearMs.forEach(m => { if (m <= month) yearSwept += investIncomeSwept(m); });
+      yearR = (total - baseYearTotal + yearSwept) / baseYearTotal * 100;
     }
   }
 
@@ -3259,7 +3290,9 @@ function renderHistory() {
           callbacks: {
             label: ctx => {
               const r = returns[ctx.dataIndex];
-              return r === null ? '첫 달 (기준)' : `${r >= 0 ? '+' : ''}${r.toFixed(2)}%`;
+              if (r === null) return '첫 달 (기준)';
+              const sw = investIncomeSwept(ms[ctx.dataIndex]);
+              return `${r >= 0 ? '+' : ''}${r.toFixed(2)}%` + (sw > 0 ? `  (배당·이자 ${fKRWfull(sw)} 포함)` : '');
             }
           }
         },
@@ -3403,6 +3436,9 @@ function renderHistory() {
     if (i===0) return 0;
     return ms.slice(1, i+1).reduce((s, mm) => s + monthDeposit(mm), 0);
   });
+  // 누적 배당·이자(잔고 밖으로 빠진 것) — 누적 수익률 보정용
+  const cumSweptHist = ms.map((m,i) =>
+    ms.slice(0, i+1).reduce((s, mm) => s + investIncomeSwept(mm), 0));
 
   // 최신 순으로 역순 정렬
   const displayMs = [...ms].reverse();
@@ -3414,8 +3450,9 @@ function renderHistory() {
       const dep = monthDeposit(m);
       const cumDep = cumDeps[i];
       const mr = monthReturn(m);
+      const divInc = investIncomeMonth(m); // 그 달 배당·이자
       const baseAmt = firstT + cumDep;
-      const cr = baseAmt>0 ? (totals[i]-baseAmt)/baseAmt*100 : null;
+      const cr = baseAmt>0 ? (totals[i]-baseAmt+cumSweptHist[i])/baseAmt*100 : null;
       const isFirst = i===0;
 
       // 단위별 수익률
@@ -3467,7 +3504,7 @@ function renderHistory() {
               })()
           }
         </td>
-        <td class="r ${mr===null?'muted':mr>=0?'pos-text':'neg-text'}">${mr===null?'-':fPct(mr)}</td>
+        <td class="r ${mr===null?'muted':mr>=0?'pos-text':'neg-text'}">${mr===null?'-':fPct(mr)}${divInc>0?`<br><span style="font-size:9px;font-weight:400;color:var(--text3);" title="이 달 배당·이자(투자 수익). 잔고 밖(은행 등)으로 빠진 금액은 수익률에 더해 반영됨">💰 배당·이자 ${fKRWfull(divInc)}</span>`:''}</td>
         <td class="r ${cr===null?'muted':cr>=0?'pos-text':'neg-text'}">${cr===null?'-':fPct(cr)}</td>
         ${unitCells}
         <td><button class="btn-sm btn-danger" onclick="if(confirm('${m} 삭제?')){delete S.months['${m}'];if(S.deposits)delete S.deposits['${m}'];save();renderHistory();}">삭제</button></td>
@@ -4921,6 +4958,20 @@ function applyPfDeposit(mm, acctNo, amount) {
   S.deposits[mm][key] = (S.deposits[mm][key] || 0) + amount;
 }
 
+// 추가입금 취소 (거래 삭제/수정 시). applyPfDeposit 과 같은 객체 형식으로만 다룬다
+// — 예전 코드가 S.deposits[mm] 를 숫자로 빼던 것이 객체와 섞여 계산이 깨지던 버그 수정.
+function removePfDeposit(mm, acctNo, amount) {
+  if (!mm || !amount || !S.deposits || S.deposits[mm] == null) return;
+  if (typeof S.deposits[mm] === 'number') S.deposits[mm] = { _total: S.deposits[mm] };
+  const d = S.deposits[mm];
+  if (typeof d !== 'object') return;
+  const key = acctNo ? '_pf_' + acctNo : '_total';
+  if (d[key] == null) return;
+  d[key] -= amount;
+  if (d[key] <= 0) delete d[key];
+  if (Object.keys(d).length === 0) delete S.deposits[mm];
+}
+
 function updateLedgerAcctBalance(acctId, delta) {
   const acc = ledger().accounts.find(a=>a.id===acctId); if(!acc) return;
   acc.balance = (acc.balance||0) + delta;
@@ -5331,8 +5382,7 @@ function deleteLedgerTxn(id) {
   // 투자 이체 역산
   const cat = ld.categories.find(c=>c.id===t.catId);
   if (cat?.name==='투자 이체' && t.type==='expense') {
-    const mm = t.date.slice(0,7);
-    if (S.deposits?.[mm]) { S.deposits[mm] -= t.amount; if(S.deposits[mm]<=0) delete S.deposits[mm]; }
+    removePfDeposit(t.date.slice(0,7), null, t.amount);
   }
   ld.txns = ld.txns.filter(x=>x.id!==id);
   save(); renderLedgerTxnList(); renderLedgerAccounts();
@@ -5627,8 +5677,7 @@ function saveEditedTxn(id) {
   // 투자 이체 역산
   const oldCat = ld.categories.find(c=>c.id===t.catId);
   if (oldCat?.name==='투자 이체' && t.type==='expense') {
-    const mm=t.date.slice(0,7);
-    if(S.deposits?.[mm]){S.deposits[mm]-=t.amount;if(S.deposits[mm]<=0)delete S.deposits[mm];}
+    removePfDeposit(t.date.slice(0,7), null, t.amount);
   }
 
   // ── 수정된 값 적용 ──
@@ -5678,9 +5727,7 @@ function saveEditedTxn(id) {
   // 투자 이체 재적용
   const newCat = ld.categories.find(c=>c.id===newCatId);
   if (newCat?.name==='투자 이체' && newType==='expense') {
-    const mm=newDate.slice(0,7);
-    if(!S.deposits)S.deposits={};
-    S.deposits[mm]=(S.deposits[mm]||0)+t.amount;
+    applyPfDeposit(newDate.slice(0,7), null, t.amount);
   }
 
   save();
@@ -5931,9 +5978,7 @@ function applyOneEmailRow(r, acctId, catId, i) {
   if (r.source) { ld.emailAcctMap = ld.emailAcctMap || {}; ld.emailAcctMap[r.source] = acctId; }
   const cat = ld.categories.find(c=>c.id===catId);
   if (cat?.name==='투자 이체' && type==='expense') {
-    const mm = r.date.slice(0,7);
-    if(!S.deposits) S.deposits={};
-    S.deposits[mm] = (S.deposits[mm]||0) + amount;
+    applyPfDeposit(r.date.slice(0,7), null, amount);
   }
 }
 
@@ -7171,9 +7216,7 @@ function applyLedgerCSV() {
 
     const cat = ld.categories.find(c=>c.id===catId);
     if (cat?.name==='투자 이체' && txnType==='expense') {
-      const mm = t.date.slice(0,7);
-      if (!S.deposits) S.deposits={};
-      S.deposits[mm]=(S.deposits[mm]||0)+t.amount;
+      applyPfDeposit(t.date.slice(0,7), null, t.amount);
     }
     count++;
   });
@@ -7561,9 +7604,7 @@ function _applyOneTemplate(t,doSave) {
   }
   const cat=ld.categories.find(c=>c.id===t.catId);
   if (cat?.name==='투자 이체'&&t.type==='expense') {
-    const mm=date.slice(0,7);
-    if(!S.deposits)S.deposits={};
-    S.deposits[mm]=(S.deposits[mm]||0)+t.amount;
+    applyPfDeposit(date.slice(0,7), null, t.amount);
   }
   if(doSave) save();
 }
