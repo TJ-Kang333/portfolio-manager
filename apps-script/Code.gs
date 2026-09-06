@@ -140,6 +140,7 @@ function doGet(e) {
     if (action === 'load_snapshots')  return makeResponse(loadSnapshots());   // 자산스냅샷 시트
     if (action === 'stock_prices')    return makeResponse(stockPricesResponse(e.parameter.tickers)); // stocks.gs
     if (action === 'hist_prices')     return makeResponse(histPricesResponse(e.parameter.date, e.parameter.tickers)); // stocks.gs
+    if (action === 'kb_price')        return makeResponse(kbPriceResponse(e.parameter)); // realestate.gs
     return makeResponse({ ok: false, error: '알 수 없는 action' });
   } catch(err) {
     return makeResponse({ ok: false, error: err.message });
