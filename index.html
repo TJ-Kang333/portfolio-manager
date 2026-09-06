@@ -403,6 +403,19 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
   </div>
   <div class="card">
     <div class="card-head"><span class="card-title">월별 이력</span></div>
+    <div style="background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);padding:10px 12px;margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:500;color:var(--text2);margin-bottom:8px;">＋ 과거 월 잔고 직접 입력 <span style="font-weight:400;color:var(--text3);">— CSV 없는 지난 달의 투자자산 잔고를 넣으면 그 달부터 월별 수익률이 계산됩니다</span></div>
+      <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap;">
+        <div class="fg" style="width:130px;"><label style="font-size:11px;color:var(--text3);">월</label>
+          <input type="month" id="hist-manual-month" /></div>
+        <div class="fg" style="min-width:150px;"><label style="font-size:11px;color:var(--text3);">계좌</label>
+          <select id="hist-manual-acct"></select></div>
+        <div class="fg" style="width:160px;"><label style="font-size:11px;color:var(--text3);">그 달 말 잔고 (원)</label>
+          <input type="text" inputmode="numeric" id="hist-manual-amt" placeholder="예: 12,000,000" oninput="formatDepInput(this)" /></div>
+        <button class="btn btn-primary" onclick="addManualMonthBalance()">저장</button>
+        <span id="hist-manual-msg" style="font-size:12px;color:var(--pos);"></span>
+      </div>
+    </div>
     <div style="overflow-x:auto;">
       <table style="min-width:100%;">
         <thead><tr>
@@ -3299,6 +3312,7 @@ async function refreshStockPrices() {
 // ── HISTORY ────────────────────────────────────────────────
 let histCh=null, histReturnCh=null;
 function renderHistory() {
+  populateHistManualForm();
   const ms=sortedMonths(), totals=ms.map(m=>monthTotal(m));
   const deposits = ms.map(m => monthDeposit(m));
 
@@ -3658,6 +3672,49 @@ function saveDepositForUnit(month, pfId, groupId, val) {
   save();
   // 합산 표시 즉시 갱신
   updateDepTotalDisplay(month);
+}
+
+// ── 과거 월 잔고 수동 입력 ─────────────────────────────────
+// CSV가 없는 지난 달의 투자자산 총액을 직접 넣어 월별 수익률 기준점을 만든다.
+// S.months[월][계좌]['_수동월말잔고'] 한 칸으로 저장 (CSV 종목과 별개 → 지우기/덮어쓰기 쉬움).
+const MANUAL_MONTH_KEY = '_수동월말잔고';
+
+function populateHistManualForm() {
+  const sel = document.getElementById('hist-manual-acct');
+  if (sel) {
+    sel.innerHTML = '<option value="_수동">합계 (계좌 구분 없음)</option>' +
+      (S.accounts || []).map(a => `<option value="${a.acctNo}">${a.name}${a.nickname ? ' ('+a.nickname+')' : ''}</option>`).join('');
+  }
+  const mEl = document.getElementById('hist-manual-month');
+  if (mEl && !mEl.value) {
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); // 지난달
+    mEl.value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  }
+}
+
+function addManualMonthBalance() {
+  const month = document.getElementById('hist-manual-month')?.value;
+  const acct  = document.getElementById('hist-manual-acct')?.value || '_수동';
+  const amt   = parseInt(String(document.getElementById('hist-manual-amt')?.value || '').replace(/[^0-9]/g, ''), 10);
+  const msg   = document.getElementById('hist-manual-msg');
+  if (!month) { if (msg) { msg.style.color = 'var(--neg)'; msg.textContent = '월을 선택하세요'; } return; }
+  if (!amt || amt <= 0) { if (msg) { msg.style.color = 'var(--neg)'; msg.textContent = '금액을 입력하세요'; } return; }
+
+  if (!S.months[month]) S.months[month] = {};
+  if (!S.months[month][acct]) S.months[month][acct] = {};
+  // 이 달·이 계좌에 CSV 종목이 이미 있으면(수동칸 제외) 합산되어 총액이 부풀 수 있음 → 확인
+  const realHoldings = Object.keys(S.months[month][acct]).filter(k => k !== MANUAL_MONTH_KEY).length;
+  if (realHoldings > 0 &&
+      !confirm(`${month} · 이 계좌에는 이미 ${realHoldings}개 종목 잔고가 있습니다.\n수동 입력분이 더해져 총액이 커집니다. 계속할까요?`)) return;
+
+  S.months[month][acct][MANUAL_MONTH_KEY] = {
+    name: '월말잔고(수동)', balance: amt, assetId: 'domestic', added: 0, manual: true,
+  };
+  save();
+  if (msg) { msg.style.color = 'var(--pos)'; msg.textContent = `✓ ${month} ${amt.toLocaleString()}원 저장`; }
+  const amtEl = document.getElementById('hist-manual-amt'); if (amtEl) amtEl.value = '';
+  renderHistory();
+  try { renderDashboard(); } catch (e) {}
 }
 
 // ── ASSETS ─────────────────────────────────────────────────
