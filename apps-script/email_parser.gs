@@ -27,6 +27,12 @@ const TXN_SHEET_NAME     = '가계부거래';
 // 누적(더하기/빼기) 대신 이 값으로 덮어써서, 놓친 알림 때문에 생기는 오차를 매번 바로잡음.
 const ALERT_HEADER = ['날짜', '유형', '가맹점', '금액', '출처', '원문', '해시', '상태', '시각', '잔액'];
 
+// ── 사용자 설정 ────────────────────────────────────────────
+// 한 은행에 계좌가 여러 개일 때, 여기 적은 계좌번호(앞부분)로 온 알림만 가계부에 반영.
+// 나머지 계좌 알림은 조용히 무시. 값을 비우면('') 그 은행 전체 반영.
+//   예: { '우리은행': '1002-644-889' }
+const BANK_ACCT_FILTER = { '우리은행': '1002-644-889' };
+
 // ── 설치: 5분 트리거 생성 (편집기에서 1회 실행) ───────────
 function setupFinanceAlertTrigger() {
   ScriptApp.getProjectTriggers()
@@ -342,9 +348,19 @@ const ALERT_PARSERS = [
 
 // 우리은행/하나은행 공용 파서 — 배열 순서(금액↔유형)가 은행마다 달라 순서 무관 정규식으로 처리
 function parseBankAlert(t, msgDate, sourceLabel) {
-  const m = t.match(/(입금|출금)/);
-  if (!m) return null; // 광고 등 실제 거래 알림이 아님
-  const isOut = m[1] === '출금';
+  // 방향 판정: [입금]/[출금] 대괄호 형태 우선.
+  // 없으면 헤더의 "입출금알림" 같은 잡음("입출금"→"출금" 오인식)을 지우고 판정.
+  let dir = (t.match(/\[(입금|출금)\]/) || [])[1];
+  if (!dir) dir = (t.replace(/입출금/g, '').match(/(입금|출금)/) || [])[1];
+  if (!dir) return null; // 광고 등 실제 거래 알림이 아님
+  const isOut = dir === '출금';
+
+  // 계좌 필터: 지정 계좌번호 앞부분이 아니면 무시 (BANK_ACCT_FILTER 참고)
+  const onlyAcct = BANK_ACCT_FILTER && BANK_ACCT_FILTER[sourceLabel];
+  if (onlyAcct) {
+    const acctM = t.match(/(\d{2,4}-\d{2,4}-\d{2,6})\s*\*/);
+    if (acctM && acctM[1].indexOf(onlyAcct) !== 0) return { skip: true };
+  }
 
   const withoutBal = t.replace(/잔액[^\n]*/g, '');
   const am = withoutBal.match(/([\d,]+)\s*원/);
@@ -424,6 +440,16 @@ function _testParser() {
       '우리WON뱅킹 입출금알림',
       '[출금] 하나생활비급여 100,000원 1002-644-889***계좌 잔액 35,901,074원 09/05 21:50:57',
     ].join('\n'),
+    // 입금 — 헤더의 "입출금알림" 때문에 예전엔 지출로 오인식되던 케이스 (2026-09-07 확인)
+    우리은행_입금: [
+      '우리WON뱅킹 입출금알림',
+      '[입금] 현대자동차      170,388원 1002-644-889***계좌 09/07 14:02:36',
+    ].join('\n'),
+    // 관리 대상 아닌 다른 우리 계좌 → BANK_ACCT_FILTER 로 skip 되어야 함
+    우리은행_타계좌: [
+      '우리WON뱅킹 입출금알림',
+      '[입금] 현대자동차      170,388원 1002-952-535***계좌 09/07 14:02:36',
+    ].join('\n'),
     하나은행_입금: [
       '하나은행',
       '입금 100,000원 생활비급여    잔액 1,494,051원 09/05 21:50 118-******-72107',
@@ -433,7 +459,8 @@ function _testParser() {
     ].join('\n'),
   };
   // source 힌트를 강제해도(=forced) 광고는 걸러지는지까지 확인
-  const hints = { 우리은행_출금: 'woori', 우리은행_광고: 'woori', 하나은행_입금: 'hana_bank' };
+  const hints = { 우리은행_출금: 'woori', 우리은행_입금: 'woori', 우리은행_타계좌: 'woori',
+                  우리은행_광고: 'woori', 하나은행_입금: 'hana_bank' };
   Object.keys(cases).forEach(k => {
     Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1), hints[k])));
   });
