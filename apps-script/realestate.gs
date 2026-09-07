@@ -38,7 +38,9 @@ function kbFindComplex(lawdCd, name) {
   if (!Array.isArray(list)) return { err: 'hscmList 실패 (HTTP ' + r.code + ') ' + r.raw };
   const norm = s => String(s || '').replace(/\s|아파트|APT/gi, '');
   const want = norm(name);
+  // 아파트/주상복합 우선 → 타입 무관 정확일치 → 부분일치 순
   let hit = list.find(c => norm(c['단지명']) === want && /아파트|주상복합/.test(c['매물종별구분명'] || ''));
+  if (!hit) hit = list.find(c => norm(c['단지명']) === want);
   if (!hit) hit = list.find(c => norm(c['단지명']).indexOf(want) > -1);
   return hit ? { hscmSn: hit['단지기본일련번호'], name: hit['단지명'] } : { err: '단지 못 찾음: ' + name };
 }
@@ -64,22 +66,34 @@ function kbPrice(hscmSn, areaSn) {
   };
 }
 
-// 전체 조회: 법정동코드 + 단지명 [+ 면적일련번호] → KB시세
-function kbLookup(lawdCd, name, areaSn) {
-  const c = kbFindComplex(lawdCd, name);
-  if (c.err) return { ok: false, error: c.err };
+// 전체 조회: (법정동코드+단지명) 또는 (hscmSn 직접) [+ 면적일련번호] → KB시세
+// hscmSn 을 주면 이름 검색을 건너뜀 (같은 이름의 오피스텔/주상복합 구분 등).
+function kbLookup(lawdCd, name, areaSn, hscmSn) {
+  let c;
+  if (hscmSn) {
+    c = { hscmSn: hscmSn, name: name || ('단지#' + hscmSn) };
+  } else {
+    c = kbFindComplex(lawdCd, name);
+    if (c.err) return { ok: false, error: c.err };
+  }
   const sn = areaSn || kbRepAreaSn(c.hscmSn);
   if (!sn) return { ok: false, error: '면적일련번호 없음 (hscmSn=' + c.hscmSn + ')' };
-  const p = kbPrice(c.hscmSn, sn);
-  if (p.err) return { ok: false, error: p.err, hscmSn: c.hscmSn, areaSn: sn };
+  const pr = kbPrice(c.hscmSn, sn);
+  if (pr.err) return { ok: false, error: pr.err, hscmSn: c.hscmSn, areaSn: sn };
   return { ok: true, complex: c.name, hscmSn: c.hscmSn, areaSn: sn,
-           low: p.low, mid: p.mid, high: p.high, baseDate: p.baseDate, area: p.area };
+           low: pr.low, mid: pr.mid, high: pr.high, baseDate: pr.baseDate, area: pr.area };
 }
 
-// doGet ?action=kb_price&lawd=1168010100&name=개나리래미안[&area=133735]
+// doGet ?action=kb_price&lawd=1168010100&name=개나리래미안[&area=133735][&hscm=32011]
 function kbPriceResponse(p) {
-  if (!p || !p['lawd'] || !p['name']) return { ok: false, error: 'lawd(법정동코드 10자리) 와 name(단지명) 이 필요합니다' };
-  return kbLookup(String(p['lawd']).trim(), String(p['name']).trim(), p['area'] ? String(p['area']).trim() : null);
+  const hscm = p && p['hscm'] ? String(p['hscm']).trim() : null;
+  if (!hscm && (!p || !p['lawd'] || !p['name']))
+    return { ok: false, error: 'lawd(법정동코드 10자리)+name(단지명), 또는 hscm(단지ID) 이 필요합니다' };
+  return kbLookup(
+    p['lawd'] ? String(p['lawd']).trim() : null,
+    p['name'] ? String(p['name']).trim() : null,
+    p['area'] ? String(p['area']).trim() : null,
+    hscm);
 }
 
 // ── 편집기 점검: 해외 IP 차단 여부 + 파서 확인 ─────────────

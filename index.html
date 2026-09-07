@@ -6038,18 +6038,24 @@ async function kbUpdateRealEstate(i) {
   if (!a) return;
   if (!GAS_URL) { alert('먼저 "Sheets 연동"에서 웹앱 URL을 저장하세요.'); return; }
 
-  let lawd = a.kbLawd, name = a.kbName, area = a.kbArea || '';
-  if (!lawd || !name) {
-    lawd = (prompt('법정동코드 10자리 (예: 서울 강남구 대치동 = 1168010600)\n※ code.go.kr 에서 "법정동코드"로 검색', a.kbLawd || '') || '').trim();
-    if (!lawd) return;
-    name = (prompt('KB부동산에 등록된 단지명 (예: 은마, 래미안대치팰리스)', a.kbName || a.name || '') || '').trim();
-    if (!name) return;
+  let lawd = a.kbLawd, name = a.kbName, area = a.kbArea || '', hscm = a.kbHscm || '';
+  if ((!lawd || !name) && !hscm) {
+    hscm = (prompt('단지 ID(단지기본일련번호)를 알면 여기 입력 — 넣으면 아래 두 칸은 생략 가능.\n(같은 이름의 오피스텔/주상복합 구분 등에 필요)', a.kbHscm || '') || '').trim();
+    if (!hscm) {
+      lawd = (prompt('법정동코드 10자리 (예: 서울 강남구 대치동 = 1168010600)\n※ code.go.kr 에서 "법정동코드"로 검색', a.kbLawd || '') || '').trim();
+      if (!lawd) return;
+      name = (prompt('KB부동산에 등록된 단지명 (예: 은마, 래미안대치팰리스)', a.kbName || a.name || '') || '').trim();
+      if (!name) return;
+    }
     area = (prompt('(선택) 특정 평형의 "면적일련번호". 모르면 비워두면 대표 평형 사용', a.kbArea || '') || '').trim();
   }
 
   try {
-    const url = GAS_URL + '?action=kb_price&lawd=' + encodeURIComponent(lawd) +
-                '&name=' + encodeURIComponent(name) + (area ? '&area=' + encodeURIComponent(area) : '');
+    const url = GAS_URL + '?action=kb_price'
+                + (lawd ? '&lawd=' + encodeURIComponent(lawd) : '')
+                + (name ? '&name=' + encodeURIComponent(name) : '')
+                + (hscm ? '&hscm=' + encodeURIComponent(hscm) : '')
+                + (area ? '&area=' + encodeURIComponent(area) : '');
     const d = await gasRequest(url);
     if (!d || !d.ok) { alert('KB시세 조회 실패: ' + ((d && d.error) || '알 수 없음')); return; }
     const low = d.low;
@@ -6064,7 +6070,8 @@ async function kbUpdateRealEstate(i) {
     if (!confirm(msg)) return;
 
     // 조회 정보 저장(다음부터 안 물어봄)
-    a.kbLawd = lawd; a.kbName = name; a.kbArea = area || undefined;
+    a.kbLawd = lawd || undefined; a.kbName = name || undefined;
+    a.kbArea = area || undefined;   a.kbHscm = hscm || undefined;
 
     // 이 계좌의 기존 KB-자동 잔액조정 거래 제거 후 새로 1건
     ld.txns = (ld.txns || []).filter(t => !(t.acctId === a.id && t.kbAuto));
