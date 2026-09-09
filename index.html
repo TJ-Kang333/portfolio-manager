@@ -5467,7 +5467,7 @@ function renderReviewNeeded() {
         <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
         <td style="font-size:12px;">${t.memo || '-'}</td>
         <td class="r" style="font-family:var(--mono);font-size:12px;">${(t.amount||0).toLocaleString()}원</td>
-        <td><select id="rvcat-${t.id}" style="font-size:11px;padding:2px 4px;">${catOpts(t.type)}</select></td>
+        <td><select id="rvcat-${t.id}" style="font-size:11px;padding:2px 4px;" onchange="reviewCatPick('${t.id}', this.value)">${catOpts(t.type)}</select></td>
         <td style="text-align:center;">${payKey
           ? `<label style="font-size:10px;color:var(--text3);white-space:nowrap;"><input type="checkbox" id="rvdef-${t.id}" /> ${payKey} 항상</label>`
           : ''}</td>
@@ -5478,6 +5478,23 @@ function renderReviewNeeded() {
 
   // 현재 카테고리 미리 선택
   items.forEach(t => { const s = document.getElementById(`rvcat-${t.id}`); if (s && t.catId) s.value = t.catId; });
+}
+
+// 검토 카드에서 카테고리를 고르는 즉시 거래에 저장 (needsReview 는 유지 → "확인" 눌러야 목록에서 빠짐).
+// 이렇게 해야 카드가 다시 그려져도(다른 항목 확인/백그라운드 동기화) 고른 값이 안 날아간다.
+// 목록 행은 그 자리에서 카테고리 칸만 갱신 (전체 재렌더 시 열려있는 select 가 초기화되는 걸 피함).
+function reviewCatPick(txnId, catId) {
+  const ld = ledger();
+  const t = ld.txns.find(x => x.id === txnId);
+  if (!t || !catId) return;
+  t.catId = catId;
+  save();
+  const row = document.getElementById(`lrow-${txnId}`);
+  const cell = row && row.children[3];
+  const cat = ld.categories.find(c => c.id === catId);
+  if (cell && cat) {
+    cell.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:6px;height:6px;border-radius:50%;background:${cat.color};"></span>${cat.name}</span>`;
+  }
 }
 
 function resolveReview(txnId) {
