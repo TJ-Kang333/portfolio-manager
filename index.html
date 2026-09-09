@@ -6676,8 +6676,8 @@ function parseLedgerCSVPaste() {
   if (detected === 'hyundai_card') parsed = parseHyundaiCard(rows);
   else if (detected === 'hana_card') parsed = parseHanaCard(rows);
   else if (detected === 'woori_bank') parsed = parseWooriBank(rows);
-  else if (detected === 'hana_bank_xls') parsed = parseHanaBankXls(rows2d);
-  else if (detected === 'custom_template') parsed = parseCustomTemplate(rows2d);
+  else if (detected === 'hana_bank_xls') parsed = parseHanaBankXls(rows);
+  else if (detected === 'custom_template') parsed = parseCustomTemplate(rows);
   else if (detected === 'hana_bank') parsed = parseHanaBank(rows);
   else parsed = parseGenericLedgerCSV(rows);
 
@@ -6687,6 +6687,9 @@ function parseLedgerCSVPaste() {
 }
 
 function detectLedgerCSVFormat(rows) {
+  // 가계부 입력양식: 헤더에 날짜+유형+카테고리+금액 모두 있으면 (은행/카드 CSV엔 "카테고리"가 없음)
+  const head5 = rows.slice(0, 5).map(r => r.join(',')).join('\n');
+  if (/날짜/.test(head5) && /유형/.test(head5) && /카테고리/.test(head5) && /금액/.test(head5)) return 'custom_template';
   const header = (rows[0]||[]).join(',');
   if (/<table/i.test(header)) return 'hyundai_card_xls';
   if (/이용일|승인일|이용금액|이용처/.test(header)) return 'hyundai_card';
@@ -7302,10 +7305,12 @@ function showLedgerCSVPreview(parsed, format) {
   const existingSet = new Set(ld.txns.map(t=>`${t.date}|${t.amount}|${t.memo}`));
 
   // 각 항목에 초기 카테고리, 중복여부, 개인용도 정보 부여
+  // catName(입력양식 CSV에 직접 적은 카테고리)이 있으면 이름으로 매칭 우선, 없으면 메모로 자동 추측
   window._csvPreviewData = parsed.map((t,i) => {
     const isDup = existingSet.has(`${t.date}|${t.amount}|${t.memo}`);
-    return { ...t, _origIdx:i, _isDup:isDup, _personal:false,
-             _catId: autoGuessCatId(t.memo, t.type) };
+    const named = t.catName ? ld.categories.find(c => c.type === t.type && c.name === String(t.catName).trim()) : null;
+    return { ...t, _origIdx:i, _isDup:isDup, _personal: t.type === 'personal',
+             _catId: named ? named.id : autoGuessCatId(t.memo || '', t.type) };
   });
 
   renderCsvPreviewTable(format);

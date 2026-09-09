@@ -29,8 +29,9 @@ const ALERT_HEADER = ['날짜', '유형', '가맹점', '금액', '출처', '원�
 
 // ── 사용자 설정 ────────────────────────────────────────────
 // 한 은행에 계좌가 여러 개일 때, 여기 적은 계좌번호(앞부분)로 온 알림만 가계부에 반영.
-// 나머지 계좌 알림은 조용히 무시. 값을 비우면('') 그 은행 전체 반영.
-//   예: { '우리은행': '1002-644-889' }
+// 나머지 계좌 알림은 조용히 무시. 그 은행을 아예 안 적으면 전체 반영.
+//   계좌 하나:   { '우리은행': '1002-644-889' }
+//   계좌 여러 개: { '우리은행': ['1002-644-889', '1002-777-123'] }  ← 배우자 계좌 등
 const BANK_ACCT_FILTER = { '우리은행': '1002-644-889' };
 
 // ── 설치: 5분 트리거 생성 (편집기에서 1회 실행) ───────────
@@ -175,8 +176,14 @@ function normalizeSourceHint(s) {
 // ── 파서 레지스트리 ──────────────────────────────────────
 //  sourceHint 가 있으면(= MacroDroid 가 어느 앱에서 왔는지 알려줌) 그 파서를 강제.
 //  알림 텍스트가 잘려 와서 키워드 매칭이 안 되는 경우를 대비.
+//  명의 구분: &source=hyundai~배우자  처럼 "~" 뒤에 라벨을 붙이면 출처가
+//  "현대카드 (배우자)" 가 되어 가계부에서 별도 계좌로 잡힘. (배우자 폰 등 같은 카드 구분용)
 function parseAlert(text, msgDate, sourceHint) {
-  const hint = normalizeSourceHint(sourceHint);
+  const rawHint = String(sourceHint || '');
+  const sep = rawHint.search(/[~|]/);
+  const hintMain = sep >= 0 ? rawHint.slice(0, sep) : rawHint;
+  const hintWho  = sep >= 0 ? rawHint.slice(sep + 1).replace(/[_+]/g, ' ').trim() : '';
+  const hint = normalizeSourceHint(hintMain);
   const list = hint
     ? ALERT_PARSERS.slice().sort((a, b) => (b.srcKey === hint ? 1 : 0) - (a.srcKey === hint ? 1 : 0))
     : ALERT_PARSERS;
@@ -187,6 +194,7 @@ function parseAlert(text, msgDate, sourceHint) {
     if (r && r.skip) return { skip: true };
     if (r && r.amount > 0 && r.date) {
       r.source = r.source || p.name;
+      if (hintWho) r.source = r.source + ' (' + hintWho + ')';
       r.raw    = text.slice(0, 500);
       r.merchant = (r.merchant || '').trim();
       // 알림 원문의 시각(MM/DD HH:MM) — 같은 금액 거래를 하루에 두 번 해도 구분되도록 중복키에 포함.
@@ -355,11 +363,12 @@ function parseBankAlert(t, msgDate, sourceLabel) {
   if (!dir) return null; // 광고 등 실제 거래 알림이 아님
   const isOut = dir === '출금';
 
-  // 계좌 필터: 지정 계좌번호 앞부분이 아니면 무시 (BANK_ACCT_FILTER 참고)
-  const onlyAcct = BANK_ACCT_FILTER && BANK_ACCT_FILTER[sourceLabel];
-  if (onlyAcct) {
+  // 계좌 필터: 지정 계좌번호(앞부분) 목록에 없으면 무시. 문자열 하나 또는 배열 모두 허용.
+  const rule = BANK_ACCT_FILTER && BANK_ACCT_FILTER[sourceLabel];
+  if (rule) {
+    const allow = Array.isArray(rule) ? rule : [rule];
     const acctM = t.match(/(\d{2,4}-\d{2,4}-\d{2,6})\s*\*/);
-    if (acctM && acctM[1].indexOf(onlyAcct) !== 0) return { skip: true };
+    if (acctM && !allow.some(a => a && acctM[1].indexOf(a) === 0)) return { skip: true };
   }
 
   const withoutBal = t.replace(/잔액[^\n]*/g, '');
