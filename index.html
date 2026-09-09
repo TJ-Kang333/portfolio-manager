@@ -95,12 +95,16 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 .preset-chip.active .x{color:rgba(255,255,255,.6);}
 .preset-chip .x:hover{color:var(--neg);}
 ::-webkit-scrollbar{width:6px;} ::-webkit-scrollbar-track{background:transparent;} ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+.nav-sep{height:1px;background:var(--border2);margin:8px 8px;}
+.nav-sep-label{font-size:10px;color:var(--text3);padding:2px 10px 4px;letter-spacing:.02em;}
 @media(max-width:700px){
   .layout{flex-direction:column;height:auto;}
   .sidebar{width:100%;height:auto;border-right:none;border-bottom:1px solid var(--border);flex-direction:row;align-items:center;}
   .sidebar-logo{border-bottom:none;border-right:1px solid var(--border2);padding:12px 14px;}
   .nav{display:flex;padding:8px;gap:4px;}
   .nav-item{margin-bottom:0;white-space:nowrap;}
+  .nav-sep{width:1px;height:auto;margin:4px 2px;align-self:stretch;}
+  .nav-sep-label{display:none;}
   .main{overflow-y:unset;}
   .content{padding:16px;}
   .metrics{grid-template-columns:repeat(2,1fr);}
@@ -121,6 +125,20 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="1,12 5,7 8,9 12,4 15,6"/></svg>
       이력
     </div>
+    <div class="nav-item" onclick="showPage('ledger')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h4" stroke-linecap="round"/></svg>
+      가계부
+    </div>
+    <div class="nav-item" onclick="showPage('crypto')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="7"/><path d="M5 6h4a1.5 1.5 0 010 3H5m0 0h4.5a1.5 1.5 0 010 3H5m0-6v6m2-7v8" stroke-linecap="round"/></svg>
+      암호화폐
+    </div>
+    <div class="nav-sep"></div>
+    <div class="nav-sep-label">투자 설정 (가끔)</div>
+    <div class="nav-item" onclick="showPage('import')">
+      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1v9M4 7l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 13h12" stroke-linecap="round"/></svg>
+      CSV 가져오기
+    </div>
     <div class="nav-item" onclick="showPage('assets')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="7"/><path d="M8 4v4l3 2"/></svg>
       자산군 설정
@@ -128,18 +146,6 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
     <div class="nav-item" onclick="showPage('portfolios')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M2 6h12M6 3v10"/></svg>
       포트폴리오
-    </div>
-    <div class="nav-item" onclick="showPage('import')">
-      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 1v9M4 7l4 4 4-4" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 13h12" stroke-linecap="round"/></svg>
-      CSV 가져오기
-    </div>
-    <div class="nav-item" onclick="showPage('crypto')">
-      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="7"/><path d="M5 6h4a1.5 1.5 0 010 3H5m0 0h4.5a1.5 1.5 0 010 3H5m0-6v6m2-7v8" stroke-linecap="round"/></svg>
-      암호화폐
-    </div>
-    <div class="nav-item" onclick="showPage('ledger')">
-      <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="1" width="12" height="14" rx="1.5"/><path d="M5 5h6M5 8h6M5 11h4" stroke-linecap="round"/></svg>
-      가계부
     </div>
     <div class="nav-item" onclick="showPage('sync')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 8A5.5 5.5 0 112.5 6M2 3v3h3" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -1745,7 +1751,7 @@ function toggleChildAcct(acctId, isChild) {
 }
 
 // ── NAVIGATION ─────────────────────────────────────────────
-const PAGES = ['dashboard','history','assets','portfolios','import','crypto','ledger','sync'];
+const PAGES = ['dashboard','history','ledger','crypto','import','assets','portfolios','sync'];
 function showPage(name) {
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach((n,i)=>n.classList.toggle('active',PAGES[i]===name));
@@ -1854,13 +1860,15 @@ function setActiveGroup(id) {
 // 순자산 = 가계부 계좌 합(은행 +, 카드/대출 -는 이미 그렇게 저장돼 있음) + 최신 월 주식 평가액 + 최신 월 코인 평가액
 function computeNetWorth() {
   const ld = ledger();
-  // 가계부 계좌를 자산(+)/부채(-)로 분리: 대출 유형이거나 잔액이 음수면 부채
-  let ledgerAsset = 0, ledgerDebt = 0;
+  // 가계부 계좌 분리: 대출/음수 = 부채, "기타" 유형 = 부동산, 나머지(+) = 예금·현금
+  let ledgerDeposit = 0, ledgerRealEstate = 0, ledgerDebt = 0;
   (ld.accounts || []).forEach(a => {
     const b = a.balance || 0;
-    if (a.type === 'loan' || b < 0) ledgerDebt += b;   // 음수 누적
-    else ledgerAsset += b;
+    if (a.type === 'loan' || b < 0) { ledgerDebt += b; return; }   // 음수 누적
+    if (a.type === 'etc') ledgerRealEstate += b;
+    else ledgerDeposit += b;
   });
+  const ledgerAsset = ledgerDeposit + ledgerRealEstate;
   const ledgerNet = ledgerAsset + ledgerDebt;
 
   const months = sortedMonths();
@@ -1883,7 +1891,8 @@ function computeNetWorth() {
     .reduce((s, e) => s + (e.krw || 0), 0);
 
   return {
-    ledgerNet, ledgerAsset, ledgerDebt, stockTotal, cryptoTotal, childStockTotal,
+    ledgerNet, ledgerAsset, ledgerDeposit, ledgerRealEstate, ledgerDebt,
+    stockTotal, cryptoTotal, childStockTotal,
     latestMonth, latestCryptoMonth,
     total: ledgerNet + stockTotal + cryptoTotal,   // 자녀 계좌 제외
   };
@@ -1904,7 +1913,8 @@ function renderNetWorth() {
     <div style="font-size:26px;font-weight:600;font-family:var(--mono);margin-bottom:8px;">${nw.total.toLocaleString()}원</div>
     ${reviewCnt ? `<div style="margin-bottom:8px;"><a href="#" onclick="showPage('ledger');showLedgerTab('txn');return false;" style="font-size:12px;color:#B9770E;text-decoration:none;">⚠️ 확인 필요한 거래 ${reviewCnt}건 — 가계부에서 카테고리 확인 →</a></div>` : ''}
     <div style="border-top:1px solid var(--border2);padding-top:6px;">
-      ${row('가계부 자산 (은행·현금·기타)', nw.ledgerAsset)}
+      ${row('예금·현금 (가계부 계좌)', nw.ledgerDeposit)}
+      ${nw.ledgerRealEstate ? row('부동산', nw.ledgerRealEstate) : ''}
       ${nw.ledgerDebt < 0 ? row('가계부 부채 (카드·대출)', nw.ledgerDebt) : ''}
       ${row('미래에셋 주식', nw.stockTotal, nw.latestMonth ? `(${nw.latestMonth})` : '(데이터 없음)')}
       ${row('OKX 코인', nw.cryptoTotal, nw.latestCryptoMonth ? `(${nw.latestCryptoMonth})` : '(데이터 없음)')}
