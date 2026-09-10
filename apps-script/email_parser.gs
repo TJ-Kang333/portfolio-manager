@@ -203,7 +203,8 @@ function parseAlert(text, msgDate, sourceHint) {
       r.hash   = makeHash(r);
       return r;
     }
-    if (forced) return null; // 지정된 파서가 못 뽑으면 다른 파서로 넘기지 않음
+    // 지정된 파서가 못 뽑았으면 다른 파서(match 기반)로 넘어간다.
+    // (전엔 여기서 return null 해서, source 힌트가 잘못 오면 미인식으로 버려졌음)
   }
   return null;
 }
@@ -238,6 +239,8 @@ const ALERT_PARSERS = [
     // '현대' + 승인/취소 + '누적' 조합으로 식별 (문자엔 "현대카드"가 아니라 "현대 MX Black"으로 옴)
     match: t => /현대/.test(t) && /(승인|취소)/.test(t) && /누적/.test(t),
     parse: (t, msgDate) => {
+      // source 힌트가 잘못 와서 강제로 이 파서로 들어와도, 명백한 지역화폐 알림이면 넘긴다.
+      if (/사랑화폐|지역화폐|경기지역화폐/.test(t)) return null;
       const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
       const isCancel = /취소/.test(t);
 
@@ -264,7 +267,12 @@ const ALERT_PARSERS = [
       // 첫 줄을 가맹점으로. 알림 제목이 "현대카드"(앱 이름)로 오고 본문에 가맹점이 있는 경우 대비 —
       // 그냥 lines[0] 을 쓰면 "현대카드"가 가맹점으로 잘못 들어감.
       if (!merchant) {
-        const isBoilerplate = l => !l || /원/.test(l) || /(승인|취소)/.test(l) || /^\d/.test(l) ||
+        // 숫자로 시작하는 상호("521 헤어룸", "365마트")도 살리기 —
+        // 예전 /^\d/ 는 그런 상호를 통째로 걸러버렸음. 이제 날짜/시각 줄과
+        // 글자 없는 줄(계좌·전화번호)만 제외한다.
+        const isBoilerplate = l => !l || /원/.test(l) || /(승인|취소)/.test(l) ||
+          /^\d{1,2}[\/.:]\d/.test(l) ||       // 9/6, 09.06, 12:26 …
+          !/[가-힣A-Za-z]/.test(l) ||         // 글자 없는 줄
           /님,?$/.test(l) || /^현대\s*(카드)?$/.test(l) || /MX\s*Black/i.test(l) || /^누적/.test(l);
         merchant = lines.find(l => !isBoilerplate(l)) || '';
       }
