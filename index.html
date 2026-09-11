@@ -596,6 +596,15 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
       <div id="l-personal-body"></div>
     </div>
 
+    <!-- 정산 받을 돈 (경기지역화폐 등 "정산대상" 계좌 — 내 돈으로 충전/결제하고 공금에서 돌려받아야 할 금액) -->
+    <div class="card" id="l-reimburse-card" style="margin-bottom:14px;display:none;">
+      <div class="card-head">
+        <span class="card-title">💰 정산 받을 돈</span>
+        <span style="font-size:11px;color:var(--text3);">내 돈으로 충전한 계좌(경기지역화폐 등) 사용액 — 공금에서 돌려받아야 함</span>
+      </div>
+      <div id="l-reimburse-body"></div>
+    </div>
+
     <!-- 메트릭 -->
     <div id="l-metrics" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px;"></div>
     <!-- 차트 + 카테고리 분석 -->
@@ -1922,10 +1931,12 @@ function renderNetWorth() {
     </div>`;
   const reviewCnt = (ledger().txns || []).filter(t => t.needsReview).length;
   const personalOwed = personalUnsettledTotal();
+  const reimburseOwed = reimburseUnsettledTotal();
   el.innerHTML = `
     <div style="font-size:26px;font-weight:600;font-family:var(--mono);margin-bottom:8px;">${nw.total.toLocaleString()}원</div>
     ${reviewCnt ? `<div style="margin-bottom:8px;"><a href="#" onclick="showPage('ledger');showLedgerTab('txn');return false;" style="font-size:12px;color:#B9770E;text-decoration:none;">⚠️ 확인 필요한 거래 ${reviewCnt}건 — 가계부에서 카테고리 확인 →</a></div>` : ''}
     ${personalOwed ? `<div style="margin-bottom:8px;"><a href="#" onclick="showPage('ledger');showLedgerTab('summary');return false;" style="font-size:12px;color:#E67E22;text-decoration:none;">💳 개인용도 미정산 ${personalOwed.toLocaleString()}원 — 가계부에서 확인 →</a></div>` : ''}
+    ${reimburseOwed ? `<div style="margin-bottom:8px;"><a href="#" onclick="showPage('ledger');showLedgerTab('summary');return false;" style="font-size:12px;color:#1D9E75;text-decoration:none;">💰 정산 받을 돈 ${reimburseOwed.toLocaleString()}원 — 가계부에서 확인 →</a></div>` : ''}
     <div style="border-top:1px solid var(--border2);padding-top:6px;">
       ${row('예금·현금 (가계부 계좌)', nw.ledgerDeposit)}
       ${nw.ledgerRealEstate ? row('부동산', nw.ledgerRealEstate) : ''}
@@ -4590,7 +4601,7 @@ function showLedgerTab(tab) {
     btn.style.fontWeight   = active ? '500' : '400';
     btn.style.color        = active ? 'var(--text)' : 'var(--text2)';
   });
-  if (tab === 'summary')    { renderLedgerSummary(); renderPersonalSettlement(); }
+  if (tab === 'summary')    { renderLedgerSummary(); renderPersonalSettlement(); renderReimburseCard(); }
   if (tab === 'txn')        { renderLedgerTxnList(); populateLedgerTxnForm(); renderTemplates(); }
   if (tab === 'accounts')   renderLedgerAccounts();
   if (tab === 'categories') renderLedgerCategories();
@@ -4929,6 +4940,134 @@ function renderPersonalSettlement() {
           <td class="r" style="font-family:var(--mono);font-size:12px;">${t.amount.toLocaleString()}원</td>
           <td style="font-size:10px;color:var(--text3);white-space:nowrap;">${t.settledDate ? '정산 ' + t.settledDate : ''}</td>
           <td><button class="btn-sm" onclick="togglePersonalSettled('${t.id}')">되돌리기</button></td>
+        </tr>`).join('')}
+      </tbody></table></div>
+    </details>` : ''}
+  `;
+}
+
+// ── 정산 받을 돈 (경기지역화폐 등 "정산대상" 계좌) ─────────────
+// 개인 돈으로 충전해서 쓰는 계좌(경기지역화폐 등)는 지출 집계엔 정상 반영하되,
+// 실제로는 공금에서 돌려받아야 할 돈이라 따로 추적한다. 경기지역화폐 알림의
+// "추가형인센티브"(충전 시 붙는 10% 보너스, 내 돈 아님)는 applyOneEmailRow 에서
+// 뽑아 t.incentive 에 저장해두므로, 정산액 = 결제금액 − incentive.
+function toggleAcctReimburse(i) {
+  const ld = ledger();
+  const a = ld.accounts[i]; if (!a) return;
+  a.reimburse = !a.reimburse;
+  save();
+  renderLedgerAccounts();
+  try { renderReimburseCard(); } catch (e) {}
+  try { renderNetWorth(); } catch (e) {}
+}
+
+function reimburseAccountIds() {
+  return new Set(ledger().accounts.filter(a => a.reimburse).map(a => a.id));
+}
+function reimburseDefaultAmt(t) {
+  return Math.max(0, (t.amount || 0) - (t.incentive || 0));
+}
+function reimburseUnsettledTotal() {
+  const ids = reimburseAccountIds();
+  return (ledger().txns || [])
+    .filter(t => t.type === 'expense' && !t.reimbursed && ids.has(t.acctId))
+    .reduce((s, t) => s + reimburseDefaultAmt(t), 0);
+}
+
+function toggleReimbursed(id) {
+  const t = ledger().txns.find(x => x.id === id); if (!t) return;
+  if (t.reimbursed) {
+    t.reimbursed = false; delete t.reimbursedDate; delete t.reimbursedAmount;
+  } else {
+    const raw = document.getElementById('reimb-amt-' + id)?.value;
+    const amt = raw != null ? parseInt(String(raw).replace(/[^0-9]/g, ''), 10) : NaN;
+    t.reimbursed = true;
+    t.reimbursedAmount = isNaN(amt) ? reimburseDefaultAmt(t) : amt;
+    t.reimbursedDate = new Date().toISOString().slice(0, 10);
+  }
+  save();
+  renderReimburseCard();
+  try { renderNetWorth(); } catch (e) {}
+}
+
+function settleAllReimburse() {
+  const ids = reimburseAccountIds();
+  const unsettled = ledger().txns.filter(t => t.type === 'expense' && !t.reimbursed && ids.has(t.acctId));
+  if (!unsettled.length) return;
+  let total = 0;
+  const today = new Date().toISOString().slice(0, 10);
+  unsettled.forEach(t => {
+    const raw = document.getElementById('reimb-amt-' + t.id)?.value;
+    const amt = raw != null ? parseInt(String(raw).replace(/[^0-9]/g, ''), 10) : NaN;
+    const use = isNaN(amt) ? reimburseDefaultAmt(t) : amt;
+    total += use;
+  });
+  if (!confirm(`미정산 ${unsettled.length}건, 총 ${total.toLocaleString()}원을 전부 정산 완료로 표시할까요?\n(공금 계좌에서 내 계좌로 실제로 송금한 뒤에 눌러주세요)`)) return;
+  unsettled.forEach(t => {
+    const raw = document.getElementById('reimb-amt-' + t.id)?.value;
+    const amt = raw != null ? parseInt(String(raw).replace(/[^0-9]/g, ''), 10) : NaN;
+    t.reimbursed = true;
+    t.reimbursedAmount = isNaN(amt) ? reimburseDefaultAmt(t) : amt;
+    t.reimbursedDate = today;
+  });
+  save();
+  renderReimburseCard();
+  try { renderNetWorth(); } catch (e) {}
+}
+
+function renderReimburseCard() {
+  const card = document.getElementById('l-reimburse-card');
+  const body = document.getElementById('l-reimburse-body');
+  if (!card || !body) return;
+  const ld = ledger();
+  const ids = reimburseAccountIds();
+  if (!ids.size) { card.style.display = 'none'; return; }
+  const all = ld.txns.filter(t => t.type === 'expense' && ids.has(t.acctId));
+  if (!all.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const unsettled = all.filter(t => !t.reimbursed).sort((a,b) => a.date.localeCompare(b.date));
+  const settled   = all.filter(t => t.reimbursed).sort((a,b) => b.date.localeCompare(a.date));
+  const total = unsettled.reduce((s, t) => s + reimburseDefaultAmt(t), 0);
+  const acctName = id => ld.accounts.find(a => a.id === id)?.name || '-';
+
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+      <div>
+        <div style="font-size:11px;color:var(--text2);">미정산 누적 (인센티브 제외)</div>
+        <div style="font-size:22px;font-weight:600;font-family:var(--mono);color:${total>0?'#1D9E75':'var(--text3)'};">${total.toLocaleString()}원</div>
+      </div>
+      ${unsettled.length ? `<button class="btn btn-primary" onclick="settleAllReimburse()">✓ 전액 정산 완료</button>` : ''}
+    </div>
+    ${unsettled.length ? `
+    <div style="overflow-x:auto;"><table style="width:100%;min-width:520px;">
+      <thead><tr><th>날짜</th><th>메모</th><th>계좌</th><th class="r">결제금액</th><th class="r">인센티브</th><th class="r">정산액</th><th></th></tr></thead>
+      <tbody>
+        ${unsettled.map(t => `<tr>
+          <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
+          <td style="font-size:12px;">${t.memo || '-'}</td>
+          <td style="font-size:12px;color:var(--text2);white-space:nowrap;">${acctName(t.acctId)}</td>
+          <td class="r" style="font-family:var(--mono);font-size:12px;color:var(--text3);">${t.amount.toLocaleString()}원</td>
+          <td class="r" style="font-family:var(--mono);font-size:12px;color:var(--text3);">${t.incentive ? '-' + t.incentive.toLocaleString() + '원' : (t.incentive===0?'-':'?')}</td>
+          <td class="r"><input type="text" inputmode="numeric" id="reimb-amt-${t.id}" value="${reimburseDefaultAmt(t).toLocaleString()}"
+            oninput="formatDepInput(this)" style="width:90px;text-align:right;font-family:var(--mono);font-size:12px;padding:3px 6px;" /></td>
+          <td><button class="btn-sm" onclick="toggleReimbursed('${t.id}')">정산완료</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>
+    <div style="font-size:10px;color:var(--text3);margin-top:6px;">
+      인센티브가 "?"인 건 과거에 들어와서 인센티브 금액을 못 뽑은 항목 — 정산액 칸을 직접 고쳐도 됩니다.
+    </div>` : `<div class="empty" style="padding:6px 0;">미정산 항목 없음 🎉</div>`}
+    ${settled.length ? `
+    <details style="margin-top:12px;">
+      <summary style="font-size:11px;color:var(--text3);cursor:pointer;">정산 완료 내역 (${settled.length}건)</summary>
+      <div style="overflow-x:auto;"><table style="width:100%;min-width:420px;margin-top:6px;"><tbody>
+        ${settled.slice(0, 50).map(t => `<tr style="opacity:.6;">
+          <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
+          <td style="font-size:12px;">${t.memo || '-'}</td>
+          <td class="r" style="font-family:var(--mono);font-size:12px;">${(t.reimbursedAmount!=null?t.reimbursedAmount:reimburseDefaultAmt(t)).toLocaleString()}원</td>
+          <td style="font-size:10px;color:var(--text3);white-space:nowrap;">${t.reimbursedDate ? '정산 ' + t.reimbursedDate : ''}</td>
+          <td><button class="btn-sm" onclick="toggleReimbursed('${t.id}')">되돌리기</button></td>
         </tr>`).join('')}
       </tbody></table></div>
     </details>` : ''}
@@ -6267,6 +6406,9 @@ function renderLedgerAccounts() {
         </td>
         <td class="r" style="font-family:var(--mono);font-size:12px;">${balDisplay}</td>
         <td style="white-space:nowrap;">
+          <button class="btn-sm" onclick="toggleAcctReimburse(${i})"
+            style="${a.reimburse ? 'background:#1D9E75;color:#fff;border-color:#1D9E75;' : ''}"
+            title="개인 돈으로 충전/결제하고 나중에 공금에서 돌려받아야 하는 계좌(경기지역화폐 등)면 켜두세요. 요약 탭에 정산 카드가 뜹니다.">💰 정산대상${a.reimburse?' ✓':''}</button>
           ${a.type==='etc' ? `<button class="btn-sm" onclick="kbUpdateRealEstate(${i})" title="KB부동산 KB시세 하한가로 이 계좌 잔액을 갱신 (부동산용)">🏢 KB시세</button> ` : ''}
           <button class="btn-sm btn-danger" onclick="if(confirm('삭제?')){ledger().accounts.splice(${i},1);save();renderLedgerAccounts();populateLedgerAcctFilter();}">삭제</button>
         </td>
@@ -6430,12 +6572,21 @@ function applyOneEmailRow(r, acctId, catId, i) {
     const def = payKey && (ld.payDefaultCat || {})[payKey];
     if (def && ld.categories.some(c => c.id === def)) catId = def;
   }
+  // 경기지역화폐: 알림 원문의 "추가형인센티브 N원"을 뽑아둔다. 충전액의 10%만큼 얹어주는
+  // 정부 인센티브라 실제로 내 돈이 나간 게 아니므로, 공금 정산액 계산 시 결제금액에서 빼야 함
+  // (정산 카드에서 사용 — 아래 renderReimburse* 참고).
+  let incentive = 0;
+  if (/지역화폐|사랑화폐/.test(r.source || '') && r.raw) {
+    const im = r.raw.match(/추가형인센티브\s*([\d,]+)\s*원/);
+    if (im) incentive = parseInt(im[1].replace(/,/g, ''), 10) || 0;
+  }
   ld.txns.push({
     id:'lt_email_'+Date.now()+'_'+(i||0)+'_'+Math.random().toString(36).slice(2,6),
     date:r.date, type, catId: catId||null, acctId, toAcctId:null,
     amount, memo:r.merchant||'', imported:true, fromEmail:true,
     ...(r.balance != null ? { adjustTarget: r.balance } : {}), // 은행이 알려준 실 잔액 = 이 시점 기준
     ...(ambig ? { needsReview: true } : {}),
+    ...(incentive ? { incentive } : {}),
   });
   updateLedgerAcctBalance(acctId, type==='expense' ? -amount : amount);
   applyReportedBalance(acctId, r.balance);
