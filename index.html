@@ -1194,7 +1194,10 @@ async function loadFromSheets() {
   try {
     const data = await gasRequest(GAS_URL + '?action=load', { mode:'cors' });
     if (!data.ok) throw new Error(data.error);
-    if (data.state) Object.assign(S, data.state);
+    // 통째로 덮어쓰지 않고 병합 — 새로고침 시점에 로컬 변경분이 아직 서버로 안 올라가 있었으면
+    // (저장 디바운스 도중, 저장 실패 후 재시도 대기 중 등) Object.assign으로 그걸 지워버리던 버그.
+    // 서버에만 있는 추가분만 로컬에 접어넣는 mergeServerInto — 다른 기기 변경 감지 때 쓰는 것과 동일 경로.
+    if (data.state) { mergeServerInto(data.state); adoptServerScalars(data.state); }
     if (data.rev != null) setBaseRev(data.rev);
     migratePersonalTxns();
     saveLocal();
