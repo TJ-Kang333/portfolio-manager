@@ -587,6 +587,15 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
         <option value="">— 전체 계좌 —</option>
       </select>
     </div>
+    <!-- 개인용도 정산 (공금 카드로 쓴 개인 지출 — 실제 지출 집계엔 안 잡히고, 내 계좌에서 채워 넣어야 할 금액) -->
+    <div class="card" id="l-personal-card" style="margin-bottom:14px;display:none;">
+      <div class="card-head">
+        <span class="card-title">💳 개인용도 정산</span>
+        <span style="font-size:11px;color:var(--text3);">공금 카드로 쓴 개인 지출 — 내 계좌에서 채워 넣어야 할 금액</span>
+      </div>
+      <div id="l-personal-body"></div>
+    </div>
+
     <!-- 메트릭 -->
     <div id="l-metrics" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px;"></div>
     <!-- 차트 + 카테고리 분석 -->
@@ -1912,9 +1921,11 @@ function renderNetWorth() {
       <span style="font-family:var(--mono);font-size:13px;color:${val<0?'var(--neg)':'var(--text)'};">${val<0?'-':''}${Math.abs(val).toLocaleString()}원</span>
     </div>`;
   const reviewCnt = (ledger().txns || []).filter(t => t.needsReview).length;
+  const personalOwed = personalUnsettledTotal();
   el.innerHTML = `
     <div style="font-size:26px;font-weight:600;font-family:var(--mono);margin-bottom:8px;">${nw.total.toLocaleString()}원</div>
     ${reviewCnt ? `<div style="margin-bottom:8px;"><a href="#" onclick="showPage('ledger');showLedgerTab('txn');return false;" style="font-size:12px;color:#B9770E;text-decoration:none;">⚠️ 확인 필요한 거래 ${reviewCnt}건 — 가계부에서 카테고리 확인 →</a></div>` : ''}
+    ${personalOwed ? `<div style="margin-bottom:8px;"><a href="#" onclick="showPage('ledger');showLedgerTab('summary');return false;" style="font-size:12px;color:#E67E22;text-decoration:none;">💳 개인용도 미정산 ${personalOwed.toLocaleString()}원 — 가계부에서 확인 →</a></div>` : ''}
     <div style="border-top:1px solid var(--border2);padding-top:6px;">
       ${row('예금·현금 (가계부 계좌)', nw.ledgerDeposit)}
       ${nw.ledgerRealEstate ? row('부동산', nw.ledgerRealEstate) : ''}
@@ -4579,7 +4590,7 @@ function showLedgerTab(tab) {
     btn.style.fontWeight   = active ? '500' : '400';
     btn.style.color        = active ? 'var(--text)' : 'var(--text2)';
   });
-  if (tab === 'summary')    renderLedgerSummary();
+  if (tab === 'summary')    { renderLedgerSummary(); renderPersonalSettlement(); }
   if (tab === 'txn')        { renderLedgerTxnList(); populateLedgerTxnForm(); renderTemplates(); }
   if (tab === 'accounts')   renderLedgerAccounts();
   if (tab === 'categories') renderLedgerCategories();
@@ -4840,6 +4851,88 @@ function renderLedgerSummary() {
   const incEl = document.getElementById('l-cat-table-inc');
   if (expEl) expEl.innerHTML = expRows.length ? expRows.map(rowHtml).join('') : `<tr><td colspan="3"><div class="empty" style="padding:8px 0;">없음</div></td></tr>`;
   if (incEl) incEl.innerHTML = incRows.length ? incRows.map(rowHtml).join('') : `<tr><td colspan="3"><div class="empty" style="padding:8px 0;">없음</div></td></tr>`;
+}
+
+// ── 개인용도 정산 ────────────────────────────────────────────
+// type:'personal' 거래(공금 카드 등으로 쓴 개인 지출)는 지출 집계에서 빠지는 대신,
+// "내 계좌에서 채워 넣어야 할 금액"으로 t.settled=false 상태로 여기서 따로 추적한다.
+function personalUnsettledTotal() {
+  return (ledger().txns || [])
+    .filter(t => t.type === 'personal' && !t.settled)
+    .reduce((s, t) => s + (t.amount || 0), 0);
+}
+
+function togglePersonalSettled(id) {
+  const t = ledger().txns.find(x => x.id === id); if (!t) return;
+  t.settled = !t.settled;
+  if (t.settled) t.settledDate = new Date().toISOString().slice(0, 10);
+  else delete t.settledDate;
+  save();
+  renderPersonalSettlement();
+  try { renderNetWorth(); } catch (e) {}
+}
+
+function settleAllPersonal() {
+  const unsettled = ledger().txns.filter(t => t.type === 'personal' && !t.settled);
+  if (!unsettled.length) return;
+  const total = unsettled.reduce((s, t) => s + t.amount, 0);
+  if (!confirm(`미정산 ${unsettled.length}건, 총 ${total.toLocaleString()}원을 전부 정산 완료로 표시할까요?\n(실제로 채워 넣은 뒤에 눌러주세요)`)) return;
+  const today = new Date().toISOString().slice(0, 10);
+  unsettled.forEach(t => { t.settled = true; t.settledDate = today; });
+  save();
+  renderPersonalSettlement();
+  try { renderNetWorth(); } catch (e) {}
+}
+
+function renderPersonalSettlement() {
+  const card = document.getElementById('l-personal-card');
+  const body = document.getElementById('l-personal-body');
+  if (!card || !body) return;
+  const ld = ledger();
+  const all = ld.txns.filter(t => t.type === 'personal');
+  if (!all.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  const unsettled = all.filter(t => !t.settled).sort((a,b) => a.date.localeCompare(b.date));
+  const settled   = all.filter(t => t.settled).sort((a,b) => b.date.localeCompare(a.date));
+  const total = unsettled.reduce((s, t) => s + t.amount, 0);
+  const acctName = id => ld.accounts.find(a => a.id === id)?.name || '-';
+
+  body.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
+      <div>
+        <div style="font-size:11px;color:var(--text2);">미정산 누적</div>
+        <div style="font-size:22px;font-weight:600;font-family:var(--mono);color:${total>0?'#E67E22':'var(--text3)'};">${total.toLocaleString()}원</div>
+      </div>
+      ${unsettled.length ? `<button class="btn btn-primary" onclick="settleAllPersonal()">✓ 전액 정산 완료</button>` : ''}
+    </div>
+    ${unsettled.length ? `
+    <div style="overflow-x:auto;"><table style="width:100%;min-width:420px;">
+      <thead><tr><th>날짜</th><th>메모</th><th>계좌</th><th class="r">금액</th><th></th></tr></thead>
+      <tbody>
+        ${unsettled.map(t => `<tr>
+          <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
+          <td style="font-size:12px;">${t.memo || '-'}</td>
+          <td style="font-size:12px;color:var(--text2);white-space:nowrap;">${acctName(t.acctId)}</td>
+          <td class="r" style="font-family:var(--mono);font-size:12px;">${t.amount.toLocaleString()}원</td>
+          <td><button class="btn-sm" onclick="togglePersonalSettled('${t.id}')">정산완료</button></td>
+        </tr>`).join('')}
+      </tbody>
+    </table></div>` : `<div class="empty" style="padding:6px 0;">미정산 항목 없음 🎉</div>`}
+    ${settled.length ? `
+    <details style="margin-top:12px;">
+      <summary style="font-size:11px;color:var(--text3);cursor:pointer;">정산 완료 내역 (${settled.length}건)</summary>
+      <div style="overflow-x:auto;"><table style="width:100%;min-width:420px;margin-top:6px;"><tbody>
+        ${settled.slice(0, 50).map(t => `<tr style="opacity:.6;">
+          <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
+          <td style="font-size:12px;">${t.memo || '-'}</td>
+          <td class="r" style="font-family:var(--mono);font-size:12px;">${t.amount.toLocaleString()}원</td>
+          <td style="font-size:10px;color:var(--text3);white-space:nowrap;">${t.settledDate ? '정산 ' + t.settledDate : ''}</td>
+          <td><button class="btn-sm" onclick="togglePersonalSettled('${t.id}')">되돌리기</button></td>
+        </tr>`).join('')}
+      </tbody></table></div>
+    </details>` : ''}
+  `;
 }
 
 // ── 카테고리 상세 내역 팝업 ──────────────────────────────────
