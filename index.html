@@ -1206,16 +1206,28 @@ async function gasRequest(url, options) {
   }
 }
 
+// 서버 state를 로컬에 반영. 로컬에 저장 대기 중인 변경(디바운스 도중, 실패 후 재시도 대기 등)이
+// 없으면 서버가 곧 진실이므로 통째로 받아들인다 — 이래야 "PC에서 고침 → 폰에서 불러오기" 같은
+// 다른 기기의 기존 항목 수정(같은 id, 값만 바뀜)도 제대로 반영됨: mergeServerInto는 union-by-id라
+// 로컬에 이미 있는 id는 서버 값이 달라도 절대 안 바꾸므로, 매번 병합만 하면 이 케이스가 막힘.
+// 반대로 저장 대기 중인 로컬 변경이 있을 때는 그걸 지키기 위해 병합만 한다(local-wins).
+function adoptServerState(state) {
+  if (!state) return;
+  if (_pendingSave || _saveScheduled) {
+    mergeServerInto(state);
+    adoptServerScalars(state);
+  } else {
+    Object.assign(S, state);
+  }
+}
+
 async function loadFromSheets() {
   if (!GAS_URL) { loadLocal(); return; }
   setSyncStatus('syncing','불러오는 중...');
   try {
     const data = await gasRequest(GAS_URL + '?action=load', { mode:'cors' });
     if (!data.ok) throw new Error(data.error);
-    // 통째로 덮어쓰지 않고 병합 — 새로고침 시점에 로컬 변경분이 아직 서버로 안 올라가 있었으면
-    // (저장 디바운스 도중, 저장 실패 후 재시도 대기 중 등) Object.assign으로 그걸 지워버리던 버그.
-    // 서버에만 있는 추가분만 로컬에 접어넣는 mergeServerInto — 다른 기기 변경 감지 때 쓰는 것과 동일 경로.
-    if (data.state) { mergeServerInto(data.state); adoptServerScalars(data.state); }
+    if (data.state) adoptServerState(data.state);
     if (data.rev != null) setBaseRev(data.rev);
     migratePersonalTxns();
     saveLocal();
@@ -1361,8 +1373,8 @@ async function checkFreshness() {
     setSyncStatus('syncing', '다른 기기 변경 감지 — 불러오는 중...');
     const d = await gasRequest(GAS_URL + '?action=load', { mode:'cors' });
     if (!(d && d.ok && d.state)) return;
-    mergeServerInto(d.state);      // 혹시 있을 로컬 추가분은 보존
-    adoptServerScalars(d.state);   // 설정류는 서버값 채택
+    // await 사이 편집이 시작됐을 수 있으니 여기서 다시 확인 — adoptServerState 가 그 시점 기준으로 처리
+    adoptServerState(d.state);
     if (d.rev != null) setBaseRev(d.rev);
     saveLocal();
     setSyncStatus('ok', '다른 기기 변경 반영됨');
