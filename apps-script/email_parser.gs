@@ -242,12 +242,30 @@ const ALERT_PARSERS = [
     name: '현대카드',
     srcKey: 'hyundai',
     // '현대' + 승인/취소 + '누적' 조합으로 식별 (문자엔 "현대카드"가 아니라 "현대 MX Black"으로 옴)
-    match: t => /현대/.test(t) && /(승인|취소)/.test(t) && /누적/.test(t),
+    // 자동납부(관리비 등)는 "누적" 줄이 아예 없이 오므로 "자동납부"만으로도 인식.
+    match: t => /현대/.test(t) && /(승인|취소)/.test(t) && (/누적/.test(t) || /자동납부/.test(t)),
     parse: (t, msgDate) => {
       // source 힌트가 잘못 와서 강제로 이 파서로 들어와도, 명백한 지역화폐 알림이면 넘긴다.
       if (/사랑화폐|지역화폐|경기지역화폐/.test(t)) return null;
-      const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
       const isCancel = /취소/.test(t);
+
+      // 자동납부(아파트관리비 등) — "자동납부 승인 강*준님 아파트관리비 656,340원"처럼
+      // 가맹점명과 금액이 한 줄에 붙어 오고, 시각/누적 줄이 아예 없어 아래 일반 로직
+      // (줄 단위로 보일러플레이트를 걸러 가맹점을 찾는 방식)으로는 뽑을 수 없다.
+      // 전용 패턴으로 가맹점+금액을 한 번에 추출.
+      const autoM = t.match(/자동납부\s*승인\s*\S*님?\s*(.+?)\s*([\d,]+)\s*원/);
+      if (autoM) {
+        return {
+          type: isCancel ? 'income' : 'expense',
+          amount: parseInt(autoM[2].replace(/,/g, ''), 10),
+          merchant: autoM[1].trim(),
+          source: '현대카드',
+          date: Utilities.formatDate(msgDate || new Date(), 'Asia/Seoul', 'yyyy-MM-dd'),
+          balance: null,
+        };
+      }
+
+      const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
 
       // 금액: '누적' 줄을 빼고 나서 나오는 첫 'N원' — 구분자가 문자와 앱알림에서 달라("·" 등)도
       // 상관없이, 누적 줄만 아니면 거의 항상 첫 번째 금액이 승인 금액.
@@ -502,12 +520,19 @@ function _testParser() {
       '(광고) [광명사랑상품권 5,000원 지급] 광명사랑상품권 이용 실태조사',
       '설문에 참여해 주신 분들 중 추첨을 통해 총 200분께 광명사랑상품권 5,000원을 드립니다.',
     ].join('\n'),
+    // 아파트관리비 자동납부 — 일반 승인 알림과 형식이 달라(누적/시각 줄 없음, 가맹점+금액이
+    // 한 줄) 전용 처리 필요 (2026-09-25 확인)
+    현대카드_자동납부_관리비: [
+      '현대카드',
+      '자동납부 승인 강*준님 아파트관리비 656,340원',
+      '자동납부 승인 강*준님 아파트관리비 656,340원',
+    ].join('\n'),
   };
   // source 힌트를 강제해도(=forced) 광고는 걸러지는지까지 확인
   const hints = { 우리은행_출금: 'woori', 우리은행_입금: 'woori', 우리은행_타계좌: 'woori',
                   우리은행_광고: 'woori', 하나은행_입금: 'hana_bank',
                   현대카드_앱알림_의원상호: 'hyundai', 현대카드_앱알림_풀무원: 'hyundai',
-                  지역화폐_광고: 'gyeonggi' };
+                  지역화폐_광고: 'gyeonggi', 현대카드_자동납부_관리비: 'hyundai' };
   Object.keys(cases).forEach(k => {
     Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1), hints[k])));
   });
