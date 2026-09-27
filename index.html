@@ -6647,6 +6647,10 @@ function applyOneEmailRow(r, acctId, catId, i) {
     const def = payKey && (ld.payDefaultCat || {})[payKey];
     if (def && ld.categories.some(c => c.id === def)) catId = def;
   }
+  // 현대카드 해외결제: 파서가 원화 환산 전이라 0원으로 기록해두고 가맹점명에 외화 금액을
+  // 남겨둠("... (GBP 11.45, 환전 전)") — "확인 필요"에 띄워서 나중에 "수정"으로 원화 금액을
+  // 직접 입력하도록 유도.
+  const fxPending = r.source === '현대카드' && /,\s*환전\s*전\)$/.test(r.merchant || '');
   // 경기지역화폐: 알림 원문의 "추가형인센티브 N원"을 뽑아둔다. 충전액의 10%만큼 얹어주는
   // 정부 인센티브라 실제로 내 돈이 나간 게 아니므로, 공금 정산액 계산 시 결제금액에서 빼야 함
   // (정산 카드에서 사용 — 아래 renderReimburse* 참고).
@@ -6660,7 +6664,7 @@ function applyOneEmailRow(r, acctId, catId, i) {
     date:r.date, type, catId: catId||null, acctId, toAcctId:null,
     amount, memo:r.merchant||'', imported:true, fromEmail:true,
     ...(r.balance != null ? { adjustTarget: r.balance } : {}), // 은행이 알려준 실 잔액 = 이 시점 기준
-    ...(ambig ? { needsReview: true } : {}),
+    ...(ambig || fxPending ? { needsReview: true } : {}),
     ...(incentive ? { incentive } : {}),
   });
   updateLedgerAcctBalance(acctId, type==='expense' ? -amount : amount);

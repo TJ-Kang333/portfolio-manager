@@ -197,7 +197,9 @@ function parseAlert(text, msgDate, sourceHint) {
     if (!forced && !p.match(text)) continue;
     const r = p.parse(text, msgDate);
     if (r && r.skip) return { skip: true };
-    if (r && r.amount > 0 && r.date) {
+    // forceAccept: amount>0을 확인할 수 없는 경우(예: 해외결제 원화 미정)에도 기록은 해야 하는 케이스.
+    // 파서가 명시적으로 표시한 경우에만 우회 — 다른 파서의 일반 실패(amount=0)는 여전히 미인식 처리.
+    if (r && (r.amount > 0 || r.forceAccept) && r.date) {
       r.source = r.source || p.name;
       if (hintWho) r.source = r.source + ' (' + hintWho + ')';
       r.raw    = text.slice(0, 500);
@@ -243,7 +245,8 @@ const ALERT_PARSERS = [
     srcKey: 'hyundai',
     // '현대' + 승인/취소 + '누적' 조합으로 식별 (문자엔 "현대카드"가 아니라 "현대 MX Black"으로 옴)
     // 자동납부(관리비 등)는 "누적" 줄이 아예 없이 오므로 "자동납부"만으로도 인식.
-    match: t => /현대/.test(t) && /(승인|취소)/.test(t) && (/누적/.test(t) || /자동납부/.test(t)),
+    // 해외승인/해외취소도 "누적" 줄 유무가 불확실해 "해외"만으로도 인식.
+    match: t => /현대/.test(t) && /(승인|취소)/.test(t) && (/누적/.test(t) || /자동납부/.test(t) || /해외/.test(t)),
     parse: (t, msgDate) => {
       // source 힌트가 잘못 와서 강제로 이 파서로 들어와도, 명백한 지역화폐 알림이면 넘긴다.
       if (/사랑화폐|지역화폐|경기지역화폐/.test(t)) return null;
@@ -261,6 +264,31 @@ const ALERT_PARSERS = [
           merchant: autoM[1].trim(),
           source: '현대카드',
           date: Utilities.formatDate(msgDate || new Date(), 'Asia/Seoul', 'yyyy-MM-dd'),
+          balance: null,
+        };
+      }
+
+      // 해외승인/해외취소(예: 대한항공120 카드 해외 사용) — "GBP 11.45 · 해외승인"처럼
+      // 원화("원")가 아니라 외화로 와서 금액을 뽑을 수 없다. 아직 원화 환산 전이니
+      // amount=0 + forceAccept(아래 parseAlert 의 amount>0 게이트 우회)로 일단 기록해두고,
+      // 가맹점명에 외화 통화·금액을 남겨서 사용자가 가계부에서 "수정"으로 원화를 직접 입력하게 한다.
+      const fxM = t.match(/([A-Z]{3})\s+([\d,.]+)\s*[·,]?\s*해외\s*(승인|취소)/);
+      if (fxM) {
+        const isFxCancel = fxM[3] === '취소';
+        const dm2 = t.match(/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+        const date2 = dm2 ? resolveDate(parseInt(dm2[1], 10), parseInt(dm2[2], 10), msgDate)
+                           : Utilities.formatDate(msgDate || new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+        const lines2 = t.split('\n').map(s => s.trim()).filter(Boolean);
+        const isBoilerplate2 = l => !l || /(승인|취소)/.test(l) || /^\d{1,2}[\/.:]\d/.test(l) ||
+          !/[가-힣A-Za-z]/.test(l) || /님,?$/.test(l) || /^현대\s*(카드)?$/.test(l) || /^누적/.test(l);
+        const merchant2 = lines2.find(l => !isBoilerplate2(l)) || '해외결제';
+        return {
+          type: isFxCancel ? 'income' : 'expense',
+          amount: 0,
+          forceAccept: true,
+          merchant: merchant2 + ' (' + fxM[1] + ' ' + fxM[2] + ', 환전 전)',
+          source: '현대카드',
+          date: date2,
           balance: null,
         };
       }
@@ -527,12 +555,28 @@ function _testParser() {
       '자동납부 승인 강*준님 아파트관리비 656,340원',
       '자동납부 승인 강*준님 아파트관리비 656,340원',
     ].join('\n'),
+    // 대한항공120 카드(국내) — MX Black과 카드명만 다를 뿐 형식은 동일, 이미 되는지 확인용
+    // (2026-09-27 확인)
+    현대카드_대한항공120_국내: [
+      '(주)페이허브',
+      '60,000원 · 일반승인',
+      '강태준 님, 현대 대한항공120 승인 일시불, 8/24 16:03',
+      '누적6,354,098원',
+    ].join('\n'),
+    // 대한항공120 카드 해외승인 — 원화("원") 없이 외화로 옴. amount=0으로 일단 기록,
+    // 가맹점명에 외화 금액 남기고 "확인 필요"에 뜨게 됨 (2026-09-27 확인)
+    현대카드_대한항공120_해외: [
+      'JONESTHEGROCER',
+      'GBP 11.45 · 해외승인',
+      '강태준 님, 현대 대한항공120 해외승인 9/18 23:01',
+    ].join('\n'),
   };
   // source 힌트를 강제해도(=forced) 광고는 걸러지는지까지 확인
   const hints = { 우리은행_출금: 'woori', 우리은행_입금: 'woori', 우리은행_타계좌: 'woori',
                   우리은행_광고: 'woori', 하나은행_입금: 'hana_bank',
                   현대카드_앱알림_의원상호: 'hyundai', 현대카드_앱알림_풀무원: 'hyundai',
-                  지역화폐_광고: 'gyeonggi', 현대카드_자동납부_관리비: 'hyundai' };
+                  지역화폐_광고: 'gyeonggi', 현대카드_자동납부_관리비: 'hyundai',
+                  현대카드_대한항공120_국내: 'hyundai', 현대카드_대한항공120_해외: 'hyundai' };
   Object.keys(cases).forEach(k => {
     Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1), hints[k])));
   });
