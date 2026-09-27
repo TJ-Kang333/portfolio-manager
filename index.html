@@ -5611,51 +5611,31 @@ function getLedgerBalanceBefore(acctId, txnId) {
   const targetPos = related.findIndex(t => t.id === txnId);
   if (targetPos === -1) return acc.balance || 0;
 
-  return _calcBalanceAt(related, acctId, targetPos, acc.balance || 0);
+  return _calcBalanceAt(related, acctId, targetPos);
 }
 
 // 공통: related(정렬된 거래 배열)에서 endIdx 직전 잔액을 순산
-// 잔액조정을 만나면 그 시점에 running을 리셋
-function _calcBalanceAt(related, acctId, endIdx, currentAccBal) {
-  // 시작점: endIdx 이전에 잔액조정이 있으면 가장 마지막 것을 기준으로 순산
-  // 없으면 현재잔액에서 endIdx 이후(포함) 거래를 역산해 시작값 도출
-  let lastAdjIdx = -1;
+// recalcAllBalances()와 완전히 같은 규칙(0에서 시작해 이 계좌에 관련된 거래만 순서대로
+// 재생, 잔액조정/은행알림 실잔액을 만나면 그 시점에 리셋)으로 계산 — 거래내역 탭의 잔액 열과
+// 계좌/카드 탭(recalcAllBalances 기준)이 서로 다른 값을 보여주지 않도록 기준을 통일한다.
+// (예전엔 현재 계좌 잔액에서 뒤쪽 거래만 역산하는 방식이라, 은행 알림처럼 adjustTarget이
+// 'adjust' 타입이 아닌 일반 거래에 붙는 경우를 못 알아채고, 그 경우 앞쪽 거래를 중복 적용해
+// 실제 잔액과 안 맞는 값을 보여주고 있었음.)
+function _calcBalanceAt(related, acctId, endIdx) {
+  let running = 0;
   for (let i = 0; i < endIdx; i++) {
-    if (related[i].type === 'adjust') lastAdjIdx = i;
-  }
-
-  let running, startIdx;
-  if (lastAdjIdx >= 0) {
-    running  = related[lastAdjIdx].adjustTarget || 0;
-    startIdx = lastAdjIdx + 1;
-  } else {
-    // 현재잔액에서 endIdx 이후(포함) 역산
-    running = currentAccBal;
-    for (let i = related.length - 1; i >= endIdx; i--) {
-      const t = related[i];
-      if (t.type === 'adjust') { running = (t.adjustTarget || 0) - t.amount * ((t.memo||'').includes('감소') ? -1 : 1); break; }
-      if (t.acctId === acctId) {
-        const wasOut = t.type==='expense'||t.type==='transfer'||t.type==='personal';
-        running = wasOut ? running + t.amount : running - t.amount;
-      } else if (t.toAcctId === acctId) {
-        running -= t.amount;
-      }
-    }
-    startIdx = 0;
-  }
-
-  // startIdx ~ endIdx-1 순산
-  for (let i = startIdx; i < endIdx; i++) {
     const t = related[i];
     if (t.type === 'adjust') {
-      running = t.adjustTarget !== undefined ? t.adjustTarget : running;
+      if (t.acctId === acctId && t.adjustTarget !== undefined) running = t.adjustTarget;
       continue;
     }
     if (t.acctId === acctId) {
       const wasOut = t.type==='expense'||t.type==='transfer'||t.type==='personal';
       running = wasOut ? running - t.amount : running + t.amount;
+      if (t.adjustTarget !== undefined) running = t.adjustTarget; // 은행알림 실잔액으로 리셋
     } else if (t.toAcctId === acctId) {
       running += t.amount;
+      if (t.toAdjustTarget !== undefined) running = t.toAdjustTarget;
     }
   }
   return running;
@@ -5889,17 +5869,12 @@ function renderLedgerTxnList() {
 
   let balMap = {};
   if (showBalance) {
-    const acctObj = ld.accounts.find(a => a.id === acctF);
-    const accBal  = acctObj?.balance || 0;
     const related = allIndexed
       .filter(t => t.acctId === acctF || t.toAcctId === acctF)
       .sort((a,b) => a.date.localeCompare(b.date) || a._idx - b._idx);
 
     for (let i = 0; i < related.length; i++) {
-      const t = related[i];
-      balMap[t.id] = t.type === 'adjust' && t.adjustTarget !== undefined
-        ? t.adjustTarget
-        : _calcBalanceAt(related, acctF, i + 1, accBal);
+      balMap[related[i].id] = _calcBalanceAt(related, acctF, i + 1);
     }
   }
 
