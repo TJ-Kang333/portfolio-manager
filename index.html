@@ -461,9 +461,15 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head">
       <span class="card-title">계좌 관리</span>
-      <span style="font-size:11px;color:var(--text3);">CSV 업로드 시 자동 생성 · 계좌명/색상 편집 가능</span>
+      <span style="font-size:11px;color:var(--text3);">CSV 업로드 시 자동 생성 · 직접 추가 가능 · 계좌명/색상 편집 가능</span>
     </div>
     <div id="acct-mini-list"></div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border2);display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+      <div class="fg" style="flex:1;min-width:130px;"><label>계좌명</label><input type="text" id="pf-new-acct-name" placeholder="예: 연금저축" /></div>
+      <div class="fg" style="flex:1;min-width:150px;"><label>계좌번호 (선택)</label><input type="text" id="pf-new-acct-no" placeholder="없으면 자동 부여" style="font-family:var(--mono);font-size:12px;" /></div>
+      <div class="fg" style="width:130px;"><label>증권사</label><input type="text" id="pf-new-acct-broker" placeholder="예: 키움증권" /></div>
+      <button class="btn" onclick="addPfAccount()">+ 투자 계좌 추가</button>
+    </div>
   </div>
 
   <div class="card">
@@ -1230,6 +1236,7 @@ async function loadFromSheets() {
     if (data.state) adoptServerState(data.state);
     if (data.rev != null) setBaseRev(data.rev);
     migratePersonalTxns();
+    migrateIncentiveAmounts();
     saveLocal();
     setSyncStatus('ok','Sheets에서 불러옴');
     setTimeout(()=>setSyncStatus('idle',''),3000);
@@ -1376,6 +1383,7 @@ async function checkFreshness() {
     // await 사이 편집이 시작됐을 수 있으니 여기서 다시 확인 — adoptServerState 가 그 시점 기준으로 처리
     adoptServerState(d.state);
     if (d.rev != null) setBaseRev(d.rev);
+    migrateIncentiveAmounts();
     saveLocal();
     setSyncStatus('ok', '다른 기기 변경 반영됨');
     setTimeout(()=>setSyncStatus('idle',''), 2500);
@@ -1624,6 +1632,19 @@ function normalizeAcctNo(raw) {
 const PALETTE = ['#2563EB','#16A34A','#D97706','#DC2626','#7C3AED','#0891B2','#BE185D','#065F46','#92400E','#1E3A8A'];
 let _palIdx = 0;
 function nextColor() { return PALETTE[_palIdx++ % PALETTE.length]; }
+
+// CSV 없이 투자 계좌를 직접 추가 (이후 CSV를 올릴 때 같은 계좌번호면 이 계좌에 붙는다)
+function addPfAccount() {
+  const name   = document.getElementById('pf-new-acct-name')?.value.trim();
+  const acctNo = document.getElementById('pf-new-acct-no')?.value.trim() || ('manual-' + Date.now());
+  const broker = document.getElementById('pf-new-acct-broker')?.value.trim() || '';
+  if (!name) { alert('계좌명을 입력하세요'); return; }
+  if (S.accounts.find(a => a.acctNo === acctNo)) { alert('이미 같은 계좌번호의 계좌가 있어요'); return; }
+  S.accounts.push({ id:'acc_' + acctNo.replace(/-/g, ''), acctNo, name, broker, color:nextColor(), portfolioId:S.activePortfolioId||null });
+  save();
+  ['pf-new-acct-name','pf-new-acct-no','pf-new-acct-broker'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  renderAssets();
+}
 
 function assetBalance(month, assetId) {
   const md=S.months[month]; if(!md) return 0;
@@ -3869,7 +3890,7 @@ function renderAssets() {
   const aml = document.getElementById('acct-mini-list');
   if (aml) {
     aml.innerHTML=S.accounts.length===0
-      ?`<div style="font-size:13px;color:var(--text3);padding:8px 0;">아직 계좌가 없습니다. CSV를 업로드하면 자동 생성됩니다.</div>`
+      ?`<div style="font-size:13px;color:var(--text3);padding:8px 0;">아직 계좌가 없습니다. CSV를 업로드하면 자동 생성되고, 아래에서 직접 추가할 수도 있어요.</div>`
       :`<table>
           <thead><tr><th>색상</th><th>계좌명</th><th>별명</th><th>계좌번호</th><th>증권사</th><th>포트폴리오</th><th>그룹</th><th></th></tr></thead>
           <tbody>${S.accounts.map((acc,ai)=>{
@@ -4976,21 +4997,49 @@ function toggleAcctReimburse(i) {
 function reimburseAccountIds() {
   return new Set(ledger().accounts.filter(a => a.reimburse).map(a => a.id));
 }
+// 인센티브가 붙은 지출(경기지역화폐)은 가계부 금액(amount)을 "결제금액 − 인센티브"(실제 내 부담액)로
+// 두고, 원래 결제금액은 gross 에 보관한다. gross 가 없으면 amount 가 곧 결제금액(인센티브 없는 일반 거래).
+function txnGross(t) { return t.gross != null ? t.gross : (t.amount || 0); }
+function applyIncentiveToAmount(t) {
+  if (t.type !== 'expense') return;
+  const inc = t.incentive || 0;
+  if (inc > 0) {
+    if (t.gross == null) t.gross = t.amount;
+    t.amount = Math.max(0, t.gross - inc);
+  } else if (t.gross != null) {
+    t.amount = t.gross;
+    delete t.gross;
+  }
+}
+// 예전에 들어온(amount=결제금액 그대로, incentive 따로) 거래를 한 번 변환. gross 유무로 중복 적용을 막는다.
+function migrateIncentiveAmounts() {
+  let changed = 0;
+  ledger().txns.forEach(t => {
+    if (t.type === 'expense' && t.incentive > 0 && t.gross == null) { applyIncentiveToAmount(t); changed++; }
+  });
+  if (changed > 0) { try { recalcAllBalances(); } catch (e) {} save(); console.log('인센티브 차감 마이그레이션: ' + changed + '건'); }
+}
+
 function reimburseDefaultAmt(t) {
   if (t.reimburseOverride != null) return t.reimburseOverride; // 정산액 칸을 직접 고친 값
-  return Math.max(0, (t.amount || 0) - (t.incentive || 0));
+  return Math.max(0, txnGross(t) - (t.incentive || 0));
 }
 
 // 인센티브 칸 수정 → 즉시 저장 + 정산액 자동 재계산(직접 고친 정산액은 새로 계산되므로 초기화)
+// 가계부 거래금액(amount)도 같이 "결제금액 − 인센티브"로 맞춘다.
 function updateReimburseIncentive(id, val) {
   const t = ledger().txns.find(x => x.id === id); if (!t) return;
   const n = parseInt(String(val).replace(/[^0-9]/g, ''), 10);
   if (isNaN(n)) delete t.incentive; else t.incentive = n;
   delete t.reimburseOverride;
+  applyIncentiveToAmount(t);
+  try { recalcAllBalances(); } catch (e) {}
   save();
   const amtEl = document.getElementById('reimb-amt-' + id);
   if (amtEl) amtEl.value = reimburseDefaultAmt(t).toLocaleString();
   updateReimburseTotal();
+  clearTimeout(window._incRefresh);
+  window._incRefresh = setTimeout(() => { try { renderLedgerSummary(); } catch (e) {} }, 600);
 }
 
 // 정산액 칸 직접 수정 → 오버라이드로 즉시 저장
@@ -5101,7 +5150,7 @@ function renderReimburseCard() {
     </tr>` : `<tr>
       <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
       <td style="font-size:12px;">${t.memo || '-'}</td>
-      <td class="r" style="font-family:var(--mono);font-size:12px;color:var(--text3);">${t.amount.toLocaleString()}원</td>
+      <td class="r" style="font-family:var(--mono);font-size:12px;color:var(--text3);">${txnGross(t).toLocaleString()}원</td>
       <td class="r"><input type="text" inputmode="numeric" id="reimb-inc-${t.id}" value="${t.incentive!=null ? t.incentive.toLocaleString() : ''}" placeholder="0"
         oninput="formatDepInput(this);updateReimburseIncentive('${t.id}', this.value)" style="width:70px;text-align:right;font-family:var(--mono);font-size:12px;padding:3px 6px;color:var(--text2);" /></td>
       <td class="r"><input type="text" inputmode="numeric" id="reimb-amt-${t.id}" data-acct="${t.acctId}" value="${reimburseDefaultAmt(t).toLocaleString()}"
@@ -5919,7 +5968,7 @@ function renderLedgerTxnList() {
           <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
           <td><span class="tag" style="background:${t.type==='income'?'var(--pos-bg)':t.type==='expense'?'var(--neg-bg)':t.type==='personal'?'#FDE8D0':'var(--surface2)'};color:${typeColor[t.type]}">${typeLabel[t.type]||t.type}</span></td>
           <td style="font-size:12px;">${cat ? `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:6px;height:6px;border-radius:50%;background:${cat.color};"></span>${cat.name}</span>` : '-'}</td>
-          <td style="font-size:12px;color:var(--text2);">${t.memo||''} ${t.imported?'<span class="tag">가져오기</span>':''}</td>
+          <td style="font-size:12px;color:var(--text2);">${t.memo||''} ${t.imported?'<span class="tag">가져오기</span>':''} ${t.gross!=null?`<span class="tag" title="결제금액 ${t.gross.toLocaleString()}원 − 인센티브 ${(t.incentive||0).toLocaleString()}원">인센티브 차감</span>`:''}</td>
           <td style="font-size:12px;">${txAcc?.name||'-'}${toAcc?' → '+toAcc.name:''}</td>
           <td class="r" style="font-family:var(--mono);font-size:12px;">${fAmt(t)}</td>
           ${balCell}
@@ -6294,6 +6343,8 @@ function saveEditedTxn(id) {
     }
   } else {
     t.amount = Math.abs(newAmount);
+    // 인센티브 차감 거래: 수정창 금액은 내 부담액이므로 원래 결제금액도 같이 맞춘다
+    if (t.gross != null) t.gross = t.amount + (t.incentive || 0);
     updateLedgerAcctBalance(newAcctId, newType==='expense'||newType==='transfer'||newType==='personal' ? -t.amount : t.amount);
     if (newType==='transfer' && newToAcctId) updateLedgerAcctBalance(newToAcctId, t.amount);
   }
@@ -6634,20 +6685,23 @@ function applyOneEmailRow(r, acctId, catId, i) {
     const im = r.raw.match(/추가형인센티브\s*([\d,]+)\s*원/);
     if (im) incentive = parseInt(im[1].replace(/,/g, ''), 10) || 0;
   }
-  ld.txns.push({
+  const newTxn = {
     id:'lt_email_'+Date.now()+'_'+(i||0)+'_'+Math.random().toString(36).slice(2,6),
     date:r.date, type, catId: catId||null, acctId, toAcctId:null,
     amount, memo:r.merchant||'', imported:true, fromEmail:true,
     ...(r.balance != null ? { adjustTarget: r.balance } : {}), // 은행이 알려준 실 잔액 = 이 시점 기준
     ...(ambig || fxPending ? { needsReview: true } : {}),
     ...(incentive ? { incentive } : {}),
-  });
-  updateLedgerAcctBalance(acctId, type==='expense' ? -amount : amount);
+  };
+  // 인센티브가 있으면 가계부 금액은 결제금액 − 인센티브(실제 내 부담액), 원래 금액은 gross 에 보관
+  applyIncentiveToAmount(newTxn);
+  ld.txns.push(newTxn);
+  updateLedgerAcctBalance(acctId, type==='expense' ? -newTxn.amount : newTxn.amount);
   applyReportedBalance(acctId, r.balance);
   if (r.source) { ld.emailAcctMap = ld.emailAcctMap || {}; ld.emailAcctMap[r.source] = acctId; }
   const cat = ld.categories.find(c=>c.id===catId);
   if (cat?.name==='투자 이체' && type==='expense') {
-    applyPfDeposit(r.date.slice(0,7), null, amount);
+    applyPfDeposit(r.date.slice(0,7), null, newTxn.amount);
   }
 }
 
@@ -8436,6 +8490,7 @@ function clearAll(){S.months={};S.accounts=[];S.tickerMap={};S.portfolios=[];S.a
 // ── INIT ───────────────────────────────────────────────────
 loadLocal();
 migratePersonalTxns();
+migrateIncentiveAmounts();
 loadFromSheets().then(()=>renderDashboard());
 const _now=new Date();
 document.getElementById('import-month').value=_now.getFullYear()+'-'+String(_now.getMonth()+1).padStart(2,'0');
