@@ -4928,6 +4928,43 @@ function settleAllPersonal() {
   try { renderNetWorth(); } catch (e) {}
 }
 
+// 정산할 항목을 골라서 합계를 보고, 고른 것만 정산 완료 처리. 선택 상태는 화면이 다시
+// 그려져도(다른 기기 동기화 등) 유지되도록 id 집합으로 따로 들고 있는다.
+const _persSel = new Set();
+function _persSelectedTxns() {
+  return ledger().txns.filter(t => t.type === 'personal' && !t.settled && _persSel.has(t.id));
+}
+function onPersonalSelChange() {
+  document.querySelectorAll('.pers-chk').forEach(c => { if (c.checked) _persSel.add(c.dataset.id); else _persSel.delete(c.dataset.id); });
+  refreshPersonalSelBar();
+}
+function togglePersonalSelAll(on) {
+  document.querySelectorAll('.pers-chk').forEach(c => { c.checked = on; });
+  onPersonalSelChange();
+}
+function refreshPersonalSelBar() {
+  const sel = _persSelectedTxns();
+  const sum = sel.reduce((s, t) => s + (t.amount || 0), 0);
+  const sumEl = document.getElementById('pers-sel-sum');
+  const btn = document.getElementById('pers-sel-btn');
+  if (sumEl) { sumEl.textContent = `선택 ${sel.length}건 · ${sum.toLocaleString()}원`; sumEl.style.color = sel.length ? '#E67E22' : 'var(--text3)'; }
+  if (btn) btn.disabled = sel.length === 0;
+  const all = document.querySelectorAll('.pers-chk');
+  const allEl = document.getElementById('pers-chk-all');
+  if (allEl) { allEl.checked = all.length > 0 && sel.length === all.length; allEl.indeterminate = sel.length > 0 && sel.length < all.length; }
+}
+function settleSelectedPersonal() {
+  const sel = _persSelectedTxns();
+  if (!sel.length) return;
+  const total = sel.reduce((s, t) => s + t.amount, 0);
+  if (!confirm(`선택한 ${sel.length}건, 총 ${total.toLocaleString()}원을 정산 완료로 표시할까요?\n(실제로 채워 넣은 뒤에 눌러주세요)`)) return;
+  const today = new Date().toISOString().slice(0, 10);
+  sel.forEach(t => { t.settled = true; t.settledDate = today; _persSel.delete(t.id); });
+  save();
+  renderPersonalSettlement();
+  try { renderNetWorth(); } catch (e) {}
+}
+
 function renderPersonalSettlement() {
   const card = document.getElementById('l-personal-card');
   const body = document.getElementById('l-personal-body');
@@ -4941,6 +4978,8 @@ function renderPersonalSettlement() {
   const settled   = all.filter(t => t.settled).sort((a,b) => b.date.localeCompare(a.date));
   const total = unsettled.reduce((s, t) => s + t.amount, 0);
   const acctName = id => ld.accounts.find(a => a.id === id)?.name || '-';
+  const unsettledIds = new Set(unsettled.map(t => t.id));
+  [..._persSel].forEach(id => { if (!unsettledIds.has(id)) _persSel.delete(id); });
 
   body.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
@@ -4951,10 +4990,15 @@ function renderPersonalSettlement() {
       ${unsettled.length ? `<button class="btn btn-primary" onclick="settleAllPersonal()">✓ 전액 정산 완료</button>` : ''}
     </div>
     ${unsettled.length ? `
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;padding:8px 10px;background:var(--surface2);border-radius:var(--radius);">
+      <span id="pers-sel-sum" style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text3);">선택 0건 · 0원</span>
+      <button class="btn-sm btn-primary" id="pers-sel-btn" onclick="settleSelectedPersonal()" disabled>✓ 선택 항목 정산 완료</button>
+    </div>
     <div style="overflow-x:auto;"><table style="width:100%;min-width:420px;">
-      <thead><tr><th>날짜</th><th>메모</th><th>계좌</th><th class="r">금액</th><th></th></tr></thead>
+      <thead><tr><th style="width:28px;"><input type="checkbox" id="pers-chk-all" onchange="togglePersonalSelAll(this.checked)" style="width:15px;height:15px;cursor:pointer;"></th><th>날짜</th><th>메모</th><th>계좌</th><th class="r">금액</th><th></th></tr></thead>
       <tbody>
         ${unsettled.map(t => `<tr>
+          <td><input type="checkbox" class="pers-chk" data-id="${t.id}" ${_persSel.has(t.id)?'checked':''} onchange="onPersonalSelChange()" style="width:15px;height:15px;cursor:pointer;"></td>
           <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
           <td style="font-size:12px;">${t.memo || '-'}</td>
           <td style="font-size:12px;color:var(--text2);white-space:nowrap;">${acctName(t.acctId)}</td>
@@ -4977,6 +5021,7 @@ function renderPersonalSettlement() {
       </tbody></table></div>
     </details>` : ''}
   `;
+  refreshPersonalSelBar();
 }
 
 // ── 정산 받을 돈 (경기지역화폐 등 "정산대상" 계좌) ─────────────
