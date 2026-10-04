@@ -6033,7 +6033,7 @@ function renderLedgerTxnList() {
           <td><span class="tag" style="background:${t.type==='income'?'var(--pos-bg)':t.type==='expense'?'var(--neg-bg)':t.type==='personal'?'#FDE8D0':'var(--surface2)'};color:${typeColor[t.type]}">${typeLabel[t.type]||t.type}</span></td>
           <td style="font-size:12px;">${cat ? `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:6px;height:6px;border-radius:50%;background:${cat.color};"></span>${cat.name}</span>` : '-'}</td>
           <td style="font-size:12px;color:var(--text2);">${t.memo||''} ${t.imported?'<span class="tag">가져오기</span>':''} ${t.settleIn?'<span class="tag" title="개인용도 정산으로 들어온 입금 — 수입 합계에서 제외">정산 입금</span>':''} ${t.gross!=null?`<span class="tag" title="결제금액 ${t.gross.toLocaleString()}원 − 인센티브 ${(t.incentive||0).toLocaleString()}원">인센티브 차감</span>`:''}</td>
-          <td style="font-size:12px;">${txAcc?.name||'-'}${toAcc?' → '+toAcc.name:''}</td>
+          <td style="font-size:12px;">${txAcc?.name||'-'}${toAcc?' → '+toAcc.name:''}${t.toPfAcctNo?' → 📈 '+((S.accounts.find(a=>a.acctNo===t.toPfAcctNo)||{}).nickname||(S.accounts.find(a=>a.acctNo===t.toPfAcctNo)||{}).name||t.toPfAcctNo):''}</td>
           <td class="r" style="font-family:var(--mono);font-size:12px;">${fAmt(t)}</td>
           ${balCell}
           <td style="display:flex;gap:4px;justify-content:flex-end;">
