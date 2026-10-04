@@ -1939,6 +1939,19 @@ function computeNetWorth() {
     });
   }
 
+  // 마지막 잔고 반영 월 "이후"에 가계부에서 투자 계좌로 옮긴 돈(이체 → S.deposits 의 _pf_ 키).
+  // 아직 다음 달 CSV/잔고에 안 잡혔어도 돈은 투자 계좌에 있으므로 순자산에 더한다.
+  // 다음 달 잔고가 들어와 latestMonth 가 그 달이 되면 자동으로 빠지므로 이중 계산이 없다.
+  let pendingPf = 0, pendingChild = 0;
+  Object.entries(S.deposits || {}).forEach(([mm, d]) => {
+    if (!d || typeof d !== 'object' || (latestMonth && mm <= latestMonth)) return;
+    Object.entries(d).forEach(([k, v]) => {
+      if (!k.startsWith('_pf_')) return;
+      if (childNos.has(k.slice(4))) pendingChild += v || 0; else pendingPf += v || 0;
+    });
+  });
+  childStockTotal += pendingChild;
+
   const cryptoEntries = Object.values(S.cryptoEntries || {});
   const cryptoMonths = [...new Set(cryptoEntries.map(e => e.month))].sort();
   const latestCryptoMonth = cryptoMonths[cryptoMonths.length - 1] || null;
@@ -1948,9 +1961,9 @@ function computeNetWorth() {
 
   return {
     ledgerNet, ledgerAsset, ledgerDeposit, ledgerRealEstate, ledgerDebt,
-    stockTotal, cryptoTotal, childStockTotal,
+    stockTotal, pendingPf, cryptoTotal, childStockTotal,
     latestMonth, latestCryptoMonth,
-    total: ledgerNet + stockTotal + cryptoTotal,   // 자녀 계좌 제외
+    total: ledgerNet + stockTotal + pendingPf + cryptoTotal,   // 자녀 계좌 제외
   };
 }
 
@@ -1977,6 +1990,7 @@ function renderNetWorth() {
       ${nw.ledgerRealEstate ? row('부동산', nw.ledgerRealEstate) : ''}
       ${nw.ledgerDebt < 0 ? row('가계부 부채 (카드·대출)', nw.ledgerDebt) : ''}
       ${row('미래에셋 주식', nw.stockTotal, nw.latestMonth ? `(${nw.latestMonth})` : '(데이터 없음)')}
+      ${nw.pendingPf ? row('투자계좌 입금분', nw.pendingPf, '(다음 잔고 반영 전 이체)') : ''}
       ${row('OKX 코인', nw.cryptoTotal, nw.latestCryptoMonth ? `(${nw.latestCryptoMonth})` : '(데이터 없음)')}
     </div>
     ${nw.childStockTotal ? `<div style="display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-top:1px dashed var(--border2);margin-top:4px;">
