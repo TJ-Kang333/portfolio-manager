@@ -5610,7 +5610,7 @@ function showCatDetail(catId, period) {
     .filter(t => {
       const d = new Date(t.date);
       if (d < from || d > to) return false;
-      return t.catId === catId;
+      return t.catId === catId && !t.settleIn && !t.settleOut; // 정산 입금/출금은 카테고리 집계와 같게 제외
     })
     .sort((a,b) => b.date.localeCompare(a.date));
 
