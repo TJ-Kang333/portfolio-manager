@@ -4716,11 +4716,16 @@ function settleCatId(type) {
   return type === 'income' ? _ensureLedgerCat('lc_settle_in', '정산', 'income', '#7F8C8D')
                            : _ensureLedgerCat('lc_settle_out', '정산', 'expense', '#7F8C8D');
 }
-// 이미 표시돼 있는데 카테고리가 비어 있는 거래에 "정산" 카테고리를 한 번 채운다(멱등)
+// 이미 표시돼 있는데 카테고리가 비어 있거나 "미분류"인 거래에 "정산" 카테고리를 채운다(멱등).
+// (실제 데이터엔 비어 있는 게 아니라 이름이 "미분류"인 카테고리가 붙어 있었음)
 function migrateSettleCats() {
+  const ld = ledger();
+  const unclassified = id => { const c = id && ld.categories.find(x => x.id === id); return !c || c.name === '미분류'; };
   let changed = 0;
-  ledger().txns.forEach(t => {
-    if (!t.catId && ((t.type === 'income' && t.settleIn) || (t.type === 'expense' && t.settleOut))) { t.catId = settleCatId(t.type); changed++; }
+  ld.txns.forEach(t => {
+    if (((t.type === 'income' && t.settleIn) || (t.type === 'expense' && t.settleOut)) && unclassified(t.catId)) {
+      t.catId = settleCatId(t.type); changed++;
+    }
   });
   if (changed > 0) save();
 }
