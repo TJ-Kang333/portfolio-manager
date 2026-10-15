@@ -5171,6 +5171,7 @@ function updateReimburseTotal() {
     el.textContent = v.toLocaleString() + '원';
     el.style.color = v > 0 ? '#1D9E75' : 'var(--text3)';
   });
+  refreshReimburseSelBars();
 }
 function reimburseUnsettledTotal() {
   const ids = reimburseAccountIds();
@@ -5249,6 +5250,7 @@ function renderReimburseCard() {
       <td style="font-size:10px;color:var(--text3);white-space:nowrap;">${t.reimbursedDate ? '정산 ' + t.reimbursedDate : ''}</td>
       <td><button class="btn-sm" onclick="toggleReimbursed('${t.id}')">되돌리기</button></td>
     </tr>` : `<tr>
+      <td><input type="checkbox" class="reimb-chk" data-id="${t.id}" data-acct="${t.acctId}" ${_reimbSel.has(t.id)?'checked':''} onchange="onReimburseSelChange()" style="width:15px;height:15px;cursor:pointer;"></td>
       <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
       <td style="font-size:12px;">${t.memo || '-'}</td>
       <td class="r" style="font-family:var(--mono);font-size:12px;color:var(--text3);">${txnGross(t).toLocaleString()}원</td>
@@ -5275,8 +5277,12 @@ function renderReimburseCard() {
           ${unsettled.length ? `<button class="btn-sm btn-primary" onclick="settleAllReimburse('${acc.id}')">✓ 이 계좌 전액 정산</button>` : ''}
         </div>
         ${unsettled.length ? `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px;padding:8px 10px;background:var(--surface2);border-radius:var(--radius);">
+          <span class="reimb-sel-sum" data-acct="${acc.id}" style="font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text3);">선택 0건 · 0원</span>
+          <button class="btn-sm btn-primary reimb-sel-btn" data-acct="${acc.id}" onclick="settleSelectedReimburse('${acc.id}')" disabled>✓ 선택 항목 정산 완료</button>
+        </div>
         <div style="overflow-x:auto;"><table style="width:100%;min-width:480px;">
-          <thead><tr><th>날짜</th><th>메모</th><th class="r">결제금액</th><th class="r">인센티브</th><th class="r">정산액</th><th></th></tr></thead>
+          <thead><tr><th style="width:28px;"><input type="checkbox" class="reimb-chk-all" data-acct="${acc.id}" onchange="toggleReimburseSelAll('${acc.id}', this.checked)" style="width:15px;height:15px;cursor:pointer;"></th><th>날짜</th><th>메모</th><th class="r">결제금액</th><th class="r">인센티브</th><th class="r">정산액</th><th></th></tr></thead>
           <tbody>${unsettled.map(t => renderRow(t, false)).join('')}</tbody>
         </table></div>` : `<div class="empty" style="padding:6px 0;">미정산 항목 없음 🎉</div>`}
         ${settled.length ? `
@@ -5297,6 +5303,56 @@ function renderReimburseCard() {
       인센티브·정산액 칸은 직접 고칠 수 있습니다 — 인센티브를 고치면 정산액이 자동으로 다시 계산되고, 정산액을 직접 고치면 그 값 그대로 저장됩니다.
     </div>
   `;
+  refreshReimburseSelBars();
+}
+
+// 정산할 항목만 골라 합계를 보고, 고른 것만 정산 완료 처리 (계좌별로 따로 — 사람마다 보낼 금액이 다르므로).
+// 합계는 화면의 "정산액" 칸 값을 그대로 쓴다(직접 고친 값 반영). 선택은 재렌더돼도 유지.
+const _reimbSel = new Set();
+function _reimbLiveAmt(t) {
+  const raw = document.getElementById('reimb-amt-' + t.id)?.value;
+  const n = raw != null ? parseInt(String(raw).replace(/[^0-9]/g, ''), 10) : NaN;
+  return isNaN(n) ? reimburseDefaultAmt(t) : n;
+}
+function _reimbSelectedTxns(acctId) {
+  return ledger().txns.filter(t => t.type === 'expense' && !t.reimbursed && t.acctId === acctId && _reimbSel.has(t.id));
+}
+function onReimburseSelChange() {
+  document.querySelectorAll('.reimb-chk').forEach(c => { if (c.checked) _reimbSel.add(c.dataset.id); else _reimbSel.delete(c.dataset.id); });
+  refreshReimburseSelBars();
+}
+function toggleReimburseSelAll(acctId, on) {
+  document.querySelectorAll('.reimb-chk').forEach(c => { if (c.dataset.acct === acctId) c.checked = on; });
+  onReimburseSelChange();
+}
+function refreshReimburseSelBars() {
+  const unsettledIds = new Set(ledger().txns.filter(t => t.type === 'expense' && !t.reimbursed).map(t => t.id));
+  [..._reimbSel].forEach(id => { if (!unsettledIds.has(id)) _reimbSel.delete(id); });
+  document.querySelectorAll('.reimb-sel-sum').forEach(el => {
+    const acctId = el.dataset.acct;
+    const sel = _reimbSelectedTxns(acctId);
+    const sum = sel.reduce((s, t) => s + _reimbLiveAmt(t), 0);
+    el.textContent = `선택 ${sel.length}건 · ${sum.toLocaleString()}원`;
+    el.style.color = sel.length ? '#1D9E75' : 'var(--text3)';
+    const btn = document.querySelector(`.reimb-sel-btn[data-acct="${acctId}"]`);
+    if (btn) btn.disabled = sel.length === 0;
+    const rows = [...document.querySelectorAll('.reimb-chk')].filter(c => c.dataset.acct === acctId);
+    const allEl = document.querySelector(`.reimb-chk-all[data-acct="${acctId}"]`);
+    if (allEl) { allEl.checked = rows.length > 0 && sel.length === rows.length; allEl.indeterminate = sel.length > 0 && sel.length < rows.length; }
+  });
+}
+function settleSelectedReimburse(acctId) {
+  const sel = _reimbSelectedTxns(acctId);
+  if (!sel.length) return;
+  const amts = sel.map(t => _reimbLiveAmt(t));
+  const total = amts.reduce((s, n) => s + n, 0);
+  const label = ledger().accounts.find(a => a.id === acctId)?.name || '이 계좌';
+  if (!confirm(`${label} 선택한 ${sel.length}건, 총 ${total.toLocaleString()}원을 정산 완료로 표시할까요?\n(실제로 송금한 뒤에 눌러주세요)`)) return;
+  const today = new Date().toISOString().slice(0, 10);
+  sel.forEach((t, i) => { t.reimbursed = true; t.reimbursedAmount = amts[i]; t.reimbursedDate = today; _reimbSel.delete(t.id); });
+  save();
+  renderReimburseCard();
+  try { renderNetWorth(); } catch (e) {}
 }
 
 // ── 카테고리 상세 내역 팝업 ──────────────────────────────────
