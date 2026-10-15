@@ -1233,7 +1233,72 @@ function adoptServerState(state) {
     adoptServerScalars(state);
   } else {
     Object.assign(S, state);
+    _syncBase = snapshotBase(S);
   }
+}
+
+// ── 3-way 병합용 기준 스냅샷 ─────────────────────────────────
+// "마지막으로 서버와 맞춰본 시점"의 항목별 사본(id → 객체). 충돌 병합 때 "이 기기가 실제로 바꾼 것"과
+// "다른 기기가 바꾼 것"을 구분하는 기준이 된다. (예전엔 로컬 우선 합집합이라, 오래 열려 있던 다른 기기가
+// 알림을 반영하며 저장하는 순간 그 기기의 옛 사본이 이기면서 — 방금 한 정산/수정이 되돌아가고, 지운 거래가
+// 되살아났음.) 기준이 없으면(null) 예전 방식(로컬 우선)으로 동작.
+let _syncBase = null;
+const _BASE_COLLS = [
+  ['txns',   s => s && s.ledger && s.ledger.txns],
+  ['lacc',   s => s && s.ledger && s.ledger.accounts],
+  ['lcat',   s => s && s.ledger && s.ledger.categories],
+  ['pacc',   s => s && s.accounts],
+  ['pf',     s => s && s.portfolios],
+  ['assets', s => s && s.assets],
+];
+function snapshotBase(state) {
+  const base = {};
+  _BASE_COLLS.forEach(([k, get]) => {
+    const m = {};
+    (Array.isArray(get(state)) ? get(state) : []).forEach(x => { if (x && x.id) m[x.id] = JSON.parse(JSON.stringify(x)); });
+    base[k] = m;
+  });
+  return base;
+}
+function _stable(o) {
+  if (o === undefined) return 'undefined';
+  if (o === null || typeof o !== 'object') return JSON.stringify(o);
+  if (Array.isArray(o)) return '[' + o.map(_stable).join(',') + ']';
+  return '{' + Object.keys(o).sort().map(k => JSON.stringify(k) + ':' + _stable(o[k])).join(',') + '}';
+}
+const _same = (a, b) => _stable(a) === _stable(b);
+// 한 항목을 필드 단위로 3-way 병합: 이 기기가 바꾼 필드는 로컬 값, 나머지는 서버(다른 기기) 값
+function _merge3Record(base, local, server) {
+  const out = {};
+  new Set([...Object.keys(base), ...Object.keys(local), ...Object.keys(server)]).forEach(k => {
+    const v = !_same(local[k], base[k]) ? local[k] : server[k];
+    if (v !== undefined) out[k] = v;
+  });
+  return out;
+}
+function _merge3ById(localArr, serverArr, baseMap) {
+  const L = Array.isArray(localArr) ? localArr : [], Sv = Array.isArray(serverArr) ? serverArr : [];
+  const sMap = new Map(Sv.filter(x => x && x.id).map(x => [x.id, x]));
+  const lIds = new Set(L.filter(x => x && x.id).map(x => x.id));
+  const out = []; let changed = 0;
+  L.forEach(l => {
+    if (!l || !l.id) { out.push(l); return; }
+    const b = baseMap && baseMap[l.id], s = sMap.get(l.id);
+    if (!s) {
+      if (b && _same(b, l)) { changed++; return; }      // 다른 기기가 지웠고 이 기기는 안 건드림 → 삭제 반영
+      out.push(l); return;                               // 이 기기에서 새로 만들었거나 고친 것 → 유지
+    }
+    if (!b) { out.push(l); return; }                     // 기준 없음 → 로컬 우선(예전 방식)
+    if (_same(b, l)) { if (!_same(b, s)) changed++; out.push(s); return; } // 이 기기는 안 바꿈 → 서버 값
+    const m = _merge3Record(b, l, s); if (!_same(m, l)) changed++; out.push(m);
+  });
+  Sv.forEach(s => {
+    if (!s || !s.id || lIds.has(s.id)) return;
+    const b = baseMap && baseMap[s.id];
+    if (b && _same(b, s)) return;                        // 이 기기가 지운 것(서버는 그대로) → 되살리지 않음
+    out.push(s); changed++;                              // 다른 기기가 새로 만든 것
+  });
+  return { arr: out, added: changed };
 }
 
 async function loadFromSheets() {
@@ -1299,19 +1364,22 @@ function mergeServerInto(server) {
 
   S.ledger = S.ledger || { accounts: [], categories: [], txns: [] };
   const sl = server.ledger || {};
-  { const r = _mergeById(S.ledger.txns, sl.txns);       S.ledger.txns = r.arr;       bump(r.added, '거래'); }
-  { const r = _mergeById(S.ledger.accounts, sl.accounts); S.ledger.accounts = r.arr; bump(r.added, '가계부계좌'); }
-  { const r = _mergeById(S.ledger.categories, sl.categories); S.ledger.categories = r.arr; bump(r.added, '카테고리'); }
+  const B = _syncBase || {};   // 기준이 있으면 3-way(항목별로 이 기기가 바꾼 것만 로컬 우선), 없으면 로컬 우선 합집합
+  { const r = _merge3ById(S.ledger.txns, sl.txns, B.txns);       S.ledger.txns = r.arr;       bump(r.added, '거래'); }
+  { const r = _merge3ById(S.ledger.accounts, sl.accounts, B.lacc); S.ledger.accounts = r.arr; bump(r.added, '가계부계좌'); }
+  { const r = _merge3ById(S.ledger.categories, sl.categories, B.lcat); S.ledger.categories = r.arr; bump(r.added, '카테고리'); }
 
   { const r = _mergeMap(S.cryptoEntries, server.cryptoEntries); S.cryptoEntries = r.obj; bump(r.added, '암호화폐'); }
   { const r = _mergeMap(S.deposits, server.deposits);           S.deposits = r.obj;      bump(r.added, ''); }
   { const r = _mergeMonths(S.months, server.months);            S.months = r.obj;        bump(r.added, '월별잔고'); }
-  { const r = _mergeById(S.accounts, server.accounts);          S.accounts = r.arr;      bump(r.added, '계좌'); }
-  { const r = _mergeById(S.portfolios, server.portfolios);      S.portfolios = r.arr;    bump(r.added, '포트폴리오'); }
+  { const r = _merge3ById(S.accounts, server.accounts, B.pacc); S.accounts = r.arr;      bump(r.added, '계좌'); }
+  { const r = _merge3ById(S.portfolios, server.portfolios, B.pf); S.portfolios = r.arr;  bump(r.added, '포트폴리오'); }
   { const r = _mergeMap(S.tickerMap, server.tickerMap);         S.tickerMap = r.obj; }
   if (Array.isArray(server.assets)) {
-    const r = _mergeById(S.assets, server.assets);              S.assets = r.arr;        bump(r.added, '자산군');
+    const r = _merge3ById(S.assets, server.assets, B.assets);   S.assets = r.arr;        bump(r.added, '자산군');
   }
+  // 이제 서버(방금 받은 상태)가 새 기준: 이후 이 기기가 바꾼 것만 로컬 우선으로 남는다
+  _syncBase = snapshotBase(server);
   return { merged, notes };
 }
 // 병합 대상이 아닌(스칼라·설정) 키만 서버값으로 채택
@@ -1342,21 +1410,24 @@ async function saveToSheets() {
   setSyncStatus('syncing', '저장 중...');
   _saving = true;
   try {
+    let sentSnap = snapshotBase(S); // 이번에 서버로 보내는 내용 = 성공하면 새 3-way 기준
     let data = await _postState();
 
-    // 서버가 그동안 다른 기기에서 바뀜 → 서버 추가분을 병합하고 한 번 재시도
+    // 서버가 그동안 다른 기기에서 바뀜 → 3-way 병합(이 기기가 바꾼 것만 로컬 우선) 후 한 번 재시도
     if (data && data.conflict) {
       const info = mergeServerInto(data.state);
       adoptServerScalars(data.state);
       if (data.rev != null) setBaseRev(data.rev);
       saveLocal();
       setSyncStatus('syncing', (info.merged ? `다른 기기 변경 ${info.merged}건 병합 — ` : '') + '재저장 중...');
+      sentSnap = snapshotBase(S);
       data = await _postState();
       if (data && data.conflict) throw new Error('연속 충돌 — 잠시 후 재시도');
-      if (data && data.ok && info.merged) { try { renderDashboard(); } catch(e){} }
+      if (data && data.ok && info.merged) { try { renderDashboard(); renderLedgerTxnList(); renderPersonalSettlement(); renderReimburseCard(); } catch(e){} }
     }
 
     if (!data || !data.ok) throw new Error((data && data.error) || '응답 오류');
+    _syncBase = sentSnap;
     if (data.rev != null) setBaseRev(data.rev);
     setSyncStatus('ok', 'Sheets 저장됨');
     setTimeout(()=>setSyncStatus('idle',''), 2000);
