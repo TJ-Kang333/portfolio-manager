@@ -611,6 +611,15 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
       <div id="l-reimburse-body"></div>
     </div>
 
+    <!-- 카드 청구 대조 (카드 결제대금 이체 vs 그 이용기간 사용 합계 → 혜택/수수료 차액을 조정 거래로 기록) -->
+    <div class="card" id="l-billcheck-card" style="margin-bottom:14px;display:none;">
+      <div class="card-head">
+        <span class="card-title">🧾 카드 청구 대조</span>
+        <span style="font-size:11px;color:var(--text3);">결제대금과 그 이용기간 사용 합계의 차이(혜택·수수료)를 맞춰 지출이 부풀지 않게</span>
+      </div>
+      <div id="l-billcheck-body"></div>
+    </div>
+
     <!-- 메트릭 -->
     <div id="l-metrics" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px;"></div>
     <!-- 차트 + 카테고리 분석 -->
@@ -4653,7 +4662,7 @@ function showLedgerTab(tab) {
     btn.style.fontWeight   = active ? '500' : '400';
     btn.style.color        = active ? 'var(--text)' : 'var(--text2)';
   });
-  if (tab === 'summary')    { renderLedgerSummary(); renderPersonalSettlement(); renderReimburseCard(); }
+  if (tab === 'summary')    { renderLedgerSummary(); renderPersonalSettlement(); renderReimburseCard(); renderBillCheckCard(); }
   if (tab === 'txn')        { renderLedgerTxnList(); populateLedgerTxnForm(); renderTemplates(); }
   if (tab === 'accounts')   renderLedgerAccounts();
   if (tab === 'categories') renderLedgerCategories();
@@ -5353,6 +5362,145 @@ function settleSelectedReimburse(acctId) {
   save();
   renderReimburseCard();
   try { renderNetWorth(); } catch (e) {}
+}
+
+// ── 카드 청구 대조 ───────────────────────────────────────────
+// 카드 사용은 알림의 승인금액 그대로 기록되는데, 실제 청구액은 카드사 할인·혜택으로 그보다 적을 수 있다
+// (해외 수수료·이자 등으로 많을 수도 있음). 결제대금 이체(은행→카드)를 기록하면 그 청구서의 "이용기간"
+// 사용 합계와 비교해서, 차액을 "카드 혜택"(수입) 또는 "카드 수수료·이자"(지출) 조정 거래 한 건으로 남긴다.
+// 알림 누락 같은 것도 같은 차액으로 드러나므로 자동 기록하지 않고 확인 후 기록한다.
+function cardBillStartDay(a) {
+  if (a.billStartDay) return a.billStartDay;
+  // 현대카드: 결제일 25일 전후 / 이용기간 전월 16일~당월 15일 (실제 결제내역과 대조해 확인)
+  return /현대카드/.test(a.name || '') ? 16 : 0;
+}
+function setCardBillStart(i) {
+  const a = ledger().accounts[i]; if (!a) return;
+  const v = prompt(`${a.name} 청구 이용기간 시작일을 입력하세요.\n예) 16 → 전월 16일 ~ 당월 15일 / 1 → 전월 1일 ~ 말일\n(카드 청구서나 앱의 "이용기간"을 확인하세요)`, cardBillStartDay(a) || '');
+  if (v === null) return;
+  const n = parseInt(v, 10);
+  if (!(n >= 1 && n <= 28)) { alert('1~28 사이 숫자를 입력하세요'); return; }
+  a.billStartDay = n;
+  save();
+  renderLedgerAccounts();
+  try { renderBillCheckCard(); } catch (e) {}
+}
+function _ymd(y, m, d) { return y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0'); }
+// 결제일 기준으로 그 청구서가 다루는 이용기간을 구한다: 결제일 이전에 끝난 가장 최근 주기
+function billPeriodFor(payDate, startDay) {
+  const [y, m, d] = payDate.split('-').map(Number);
+  let endY = y, endM = m, endD;
+  if (startDay === 1) {
+    endM = m - 1; if (endM < 1) { endM = 12; endY = y - 1; }
+    endD = new Date(endY, endM, 0).getDate();
+  } else {
+    endD = startDay - 1;
+    if (d <= endD) { endM = m - 1; if (endM < 1) { endM = 12; endY = y - 1; } }
+  }
+  let sY = endY, sM = endM - 1; if (sM < 1) { sM = 12; sY = endY - 1; }
+  return { start: startDay === 1 ? _ymd(endY, endM, 1) : _ymd(sY, sM, startDay), end: _ymd(endY, endM, endD) };
+}
+
+let _billGroups = {};
+function computeBillGroups() {
+  const ld = ledger();
+  const cutoff = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  const raw = {}, needSetup = {};
+  ld.txns.forEach(t => {
+    if (t.type !== 'transfer' || !t.toAcctId || t.billChecked || (t.date || '') < cutoff) return;
+    const acc = ld.accounts.find(a => a.id === t.toAcctId);
+    if (!acc || acc.type !== 'card') return;
+    const sd = cardBillStartDay(acc);
+    if (!sd) { needSetup[acc.id] = acc; return; }
+    const p = billPeriodFor(t.date, sd);
+    const key = acc.id + '|' + p.end;
+    (raw[key] = raw[key] || { key, acc, period: p, pays: [] }).pays.push(t);
+  });
+  const groups = [];
+  Object.values(raw).forEach(g => {
+    const use = ld.txns.filter(t => t.acctId === g.acc.id && !t.cardAdj && t.date >= g.period.start && t.date <= g.period.end &&
+      (t.type === 'expense' || t.type === 'personal' || t.type === 'income'));
+    if (!use.length) return; // 사용 내역이 없으면 대조할 수 없음 (알림 연동 전 카드 등)
+    g.count = use.length;
+    g.usage = use.reduce((s, t) => s + (t.type === 'income' ? -t.amount : t.amount), 0);
+    g.bill = g.pays.reduce((s, t) => s + t.amount, 0);
+    g.diff = g.usage - g.bill; // + 면 혜택(청구가 더 적음), − 면 수수료·이자 등(청구가 더 많음)
+    g.fxPending = use.filter(t => t.amount === 0 && /환전\s*전\)$/.test(t.memo || '')).length;
+    g.payDate = g.pays.map(t => t.date).sort().pop();
+    groups.push(g);
+  });
+  groups.sort((a, b) => b.payDate.localeCompare(a.payDate));
+  return { groups, needSetup: Object.values(needSetup) };
+}
+
+function renderBillCheckCard() {
+  const card = document.getElementById('l-billcheck-card');
+  const body = document.getElementById('l-billcheck-body');
+  if (!card || !body) return;
+  const { groups, needSetup } = computeBillGroups();
+  _billGroups = {};
+  groups.forEach(g => { _billGroups[g.key] = g; });
+  if (!groups.length && !needSetup.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const won = n => n.toLocaleString() + '원';
+  body.innerHTML =
+    needSetup.map(a => `<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">${a.name}: 이용기간을 설정하면 결제대금을 대조할 수 있어요
+      <button class="btn-sm" onclick="setCardBillStart(${ledger().accounts.indexOf(a)})">📅 이용기간 설정</button></div>`).join('') +
+    groups.map(g => {
+      const d = g.diff, big = g.bill > 0 && Math.abs(d) > g.bill * 0.1;
+      const verdict = d === 0 ? '<span style="color:var(--text2);">사용 합계와 일치</span>'
+        : d > 0 ? `<span style="color:var(--pos);">혜택 ${won(d)}</span> <span style="font-size:11px;color:var(--text3);">(청구가 사용 합계보다 적음)</span>`
+        : `<span style="color:var(--neg);">수수료·이자 등 ${won(-d)}</span> <span style="font-size:11px;color:var(--text3);">(청구가 사용 합계보다 많음)</span>`;
+      const warn = [];
+      if (g.fxPending) warn.push(`환전 전 해외결제 ${g.fxPending}건(0원)이 있어 사용 합계가 작게 잡혀요 — 원화 금액을 먼저 입력하세요`);
+      if (big && !g.fxPending) warn.push('차이가 청구액의 10%를 넘어요 — 알림 누락이나 이용기간을 확인하세요');
+      return `<div style="padding:10px 0;border-bottom:1px solid var(--border2);">
+        <div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline;">
+          <div style="font-size:13px;"><b>${g.acc.name}</b> <span style="color:var(--text2);">결제 ${g.payDate} · ${won(g.bill)}${g.pays.length > 1 ? ` (${g.pays.length}회 합산)` : ''}</span></div>
+          <div style="font-size:13px;font-family:var(--mono);">${verdict}</div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:3px;">이용기간 ${g.period.start} ~ ${g.period.end} · 사용 합계 ${won(g.usage)} (${g.count}건)</div>
+        ${warn.map(w => `<div style="font-size:11px;color:#B9770E;margin-top:3px;">⚠️ ${w}</div>`).join('')}
+        <div style="margin-top:6px;display:flex;gap:6px;">
+          <button class="btn-sm btn-primary" onclick="recordCardBill('${g.key}')" ${g.fxPending ? 'disabled' : ''}>${d === 0 ? '✓ 확인 완료' : '✓ 차액 기록'}</button>
+          <button class="btn-sm" onclick="dismissCardBill('${g.key}')">무시</button>
+        </div>
+      </div>`;
+    }).join('');
+}
+
+function _ensureLedgerCat(id, name, type, color) {
+  const ld = ledger();
+  if (!ld.categories.some(c => c.id === id)) ld.categories.push({ id, name, type, color });
+  return id;
+}
+function recordCardBill(key) {
+  const g = _billGroups[key]; if (!g) return;
+  const ld = ledger();
+  let adjId = null;
+  if (g.diff !== 0) {
+    const big = g.bill > 0 && Math.abs(g.diff) > g.bill * 0.1;
+    if (big && !confirm(`차이가 ${Math.abs(g.diff).toLocaleString()}원으로 청구액의 10%를 넘습니다.\n알림 누락이나 이용기간 설정이 틀린 건 아닌지 확인하셨나요?\n그래도 조정 거래로 기록할까요?`)) return;
+    const benefit = g.diff > 0, amt = Math.abs(g.diff);
+    adjId = 'lt_cardadj_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
+    ld.txns.push({
+      id: adjId, date: g.payDate, type: benefit ? 'income' : 'expense', acctId: g.acc.id, toAcctId: null, amount: amt,
+      catId: benefit ? _ensureLedgerCat('lc_card_benefit', '카드 혜택', 'income', '#16A085') : _ensureLedgerCat('lc_card_cost', '카드 수수료·이자', 'expense', '#95A5A6'),
+      memo: `${benefit ? '카드 혜택' : '카드 수수료·이자 등'} (이용 ${g.period.start}~${g.period.end}, 청구 ${g.bill.toLocaleString()}원)`,
+      imported: false, cardAdj: true,
+    });
+    updateLedgerAcctBalance(g.acc.id, benefit ? amt : -amt);
+  }
+  g.pays.forEach(t => { t.billChecked = true; if (adjId) t.billAdjId = adjId; });
+  save();
+  renderBillCheckCard();
+  try { renderLedgerTxnList(); renderLedgerSummary(); } catch (e) {}
+}
+function dismissCardBill(key) {
+  const g = _billGroups[key]; if (!g) return;
+  g.pays.forEach(t => { t.billChecked = 'skip'; });
+  save();
+  renderBillCheckCard();
 }
 
 // ── 카테고리 상세 내역 팝업 ──────────────────────────────────
@@ -6705,6 +6853,7 @@ function renderLedgerAccounts() {
           <button class="btn-sm" onclick="toggleAcctReimburse(${i})"
             style="${a.reimburse ? 'background:#1D9E75;color:#fff;border-color:#1D9E75;' : ''}"
             title="개인 돈으로 충전/결제하고 나중에 공금에서 돌려받아야 하는 계좌(경기지역화폐 등)면 켜두세요. 요약 탭에 정산 카드가 뜹니다.">💰 정산대상${a.reimburse?' ✓':''}</button>
+          ${a.type==='card' ? `<button class="btn-sm" onclick="setCardBillStart(${i})" title="카드 청구 이용기간 시작일 (예: 16 → 전월 16일~당월 15일). 결제대금 대조에 사용">📅 이용기간 ${cardBillStartDay(a) ? cardBillStartDay(a)+'일~'+(cardBillStartDay(a)===1?'말일':(cardBillStartDay(a)-1)+'일') : '설정'}</button> ` : ''}
           ${a.type==='etc' ? `<button class="btn-sm" onclick="kbUpdateRealEstate(${i})" title="KB부동산 KB시세 하한가로 이 계좌 잔액을 갱신 (부동산용)">🏢 KB시세</button> ` : ''}
           <button class="btn-sm btn-danger" onclick="if(confirm('삭제?')){ledger().accounts.splice(${i},1);save();renderLedgerAccounts();populateLedgerAcctFilter();}">삭제</button>
         </td>
