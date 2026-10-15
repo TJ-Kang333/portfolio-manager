@@ -4706,6 +4706,9 @@ const DEFAULT_LEDGER_CATS = [
 
 // 개인용도 정산으로 들어온 입금(settleIn)은 잔액엔 반영되지만 수입 합계에서는 뺀다
 function isCountedIncome(t) { return t.type === 'income' && !t.settleIn; }
+// 정산 받을 돈을 공금 계좌에서 내 계좌로 보낸 출금(settleOut)도 마찬가지 — 잔액엔 반영, 지출 합계에서는 제외
+// (그 돈이 쓰인 경기지역화폐 결제는 이미 지출로 잡혀 있으므로 이중 계산 방지)
+function isCountedExpense(t) { return t.type === 'expense' && !t.settleOut; }
 
 function ledger() {
   if (!S.ledger) S.ledger = { accounts:[], categories:[], txns:[] };
@@ -4777,7 +4780,7 @@ function renderLedgerSummary() {
   });
 
   const totalIncome  = txns.filter(isCountedIncome).reduce((s,t)=>s+t.amount,0);
-  const totalExpense = txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
+  const totalExpense = txns.filter(isCountedExpense).reduce((s,t)=>s+t.amount,0);
   const net = totalIncome - totalExpense;
 
   // ── 투자 자산 집계 (포트폴리오 앱 최신 월) ─────────────────
@@ -4912,7 +4915,7 @@ function renderLedgerSummary() {
     const mm = t.date.slice(0,7);
     if (!monthMap[mm]) monthMap[mm] = { income:0, expense:0 };
     if (isCountedIncome(t)) monthMap[mm].income  += t.amount;
-    if (t.type==='expense') monthMap[mm].expense += t.amount;
+    if (isCountedExpense(t)) monthMap[mm].expense += t.amount;
   });
   const months = Object.keys(monthMap).sort().slice(-12);
   if (_lBarCh) _lBarCh.destroy();
@@ -4940,7 +4943,7 @@ function renderLedgerSummary() {
 
   // 지출 파이 차트
   const expByCat = {};
-  txns.filter(t=>t.type==='expense').forEach(t => {
+  txns.filter(isCountedExpense).forEach(t => {
     expByCat[t.catId] = (expByCat[t.catId]||0) + t.amount;
   });
   const cats = ld.categories.filter(c=>c.type==='expense'&&expByCat[c.id]);
@@ -4969,7 +4972,7 @@ function renderLedgerSummary() {
     return ld.categories
       .filter(c => c.type === type)
       .map(c => {
-        const amt = txns.filter(t => t.type === type && !t.settleIn && t.catId === c.id).reduce((s,t)=>s+t.amount, 0);
+        const amt = txns.filter(t => t.type === type && !t.settleIn && !t.settleOut && t.catId === c.id).reduce((s,t)=>s+t.amount, 0);
         const pct = base > 0 ? (amt/base*100).toFixed(1) : 0;
         return { c, amt, pct };
       })
@@ -5300,9 +5303,10 @@ function settleAllReimburse(acctId) {
     t.reimbursedAmount = isNaN(amt) ? reimburseDefaultAmt(t) : amt;
     t.reimbursedDate = today;
   });
+  offerLinkSettleOut(total);
   save();
   renderReimburseCard();
-  try { renderNetWorth(); } catch (e) {}
+  try { renderNetWorth(); renderLedgerSummary(); } catch (e) {}
 }
 
 // 계좌별로 섹션을 나눠 보여준다 — 정산대상 계좌가 여러 개(나의 경기지역화폐 + 배우자의
@@ -5430,9 +5434,30 @@ function settleSelectedReimburse(acctId) {
   if (!confirm(`${label} 선택한 ${sel.length}건, 총 ${total.toLocaleString()}원을 정산 완료로 표시할까요?\n(실제로 송금한 뒤에 눌러주세요)`)) return;
   const today = new Date().toISOString().slice(0, 10);
   sel.forEach((t, i) => { t.reimbursed = true; t.reimbursedAmount = amts[i]; t.reimbursedDate = today; _reimbSel.delete(t.id); });
+  offerLinkSettleOut(total);
   save();
   renderReimburseCard();
-  try { renderNetWorth(); } catch (e) {}
+  try { renderNetWorth(); renderLedgerSummary(); } catch (e) {}
+}
+
+// 정산 받을 돈을 공금 계좌(은행)에서 내 계좌로 보낸 출금이 가계부에 "지출"로 들어와 있으면, 같은 돈이
+// 지출로 두 번(경기지역화폐 결제 + 이 출금) 잡히지 않도록 지출 합계에서 빼는 표시(settleOut)를 연결한다.
+// 금액이 정산 합계와 정확히 같은 최근 은행 출금 중 가장 최근 것을 후보로 보여주고 묻는다.
+function offerLinkSettleOut(total) {
+  if (!(total > 0)) return;
+  const ld = ledger();
+  const cutoff = new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10);
+  const rIds = reimburseAccountIds();
+  const cand = ld.txns
+    .filter(t => t.type === 'expense' && !t.settleOut && t.amount === total && t.date >= cutoff && !rIds.has(t.acctId) &&
+      (ld.accounts.find(a => a.id === t.acctId) || {}).type === 'bank')
+    .sort((a, b) => b.date.localeCompare(a.date))[0];
+  if (!cand) {
+    alert('같은 금액의 은행 출금 거래를 못 찾았어요.\n정산금을 보낸 출금이 가계부에 들어온 뒤, 그 거래의 "수정"에서 "정산 받을 돈 지급 출금"을 체크해주세요.');
+    return;
+  }
+  const acc = ld.accounts.find(a => a.id === cand.acctId)?.name || '-';
+  if (confirm(`${cand.date} ${acc}에서 나간 출금 ${total.toLocaleString()}원${cand.memo ? ` (${cand.memo})` : ''}을\n이번 정산금 지급으로 연결해서 지출 합계에서 뺄까요?`)) cand.settleOut = true;
 }
 
 // ── 카드 청구 대조 ───────────────────────────────────────────
@@ -6344,7 +6369,7 @@ function renderLedgerTxnList() {
           <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
           <td><span class="tag" style="background:${t.type==='income'?'var(--pos-bg)':t.type==='expense'?'var(--neg-bg)':t.type==='personal'?'#FDE8D0':'var(--surface2)'};color:${typeColor[t.type]}">${typeLabel[t.type]||t.type}</span></td>
           <td style="font-size:12px;">${cat ? `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:6px;height:6px;border-radius:50%;background:${cat.color};"></span>${cat.name}</span>` : '-'}</td>
-          <td style="font-size:12px;color:var(--text2);">${t.memo||''} ${t.imported?'<span class="tag">가져오기</span>':''} ${t.settleIn?'<span class="tag" title="개인용도 정산으로 들어온 입금 — 수입 합계에서 제외">정산 입금</span>':''} ${t.gross!=null?`<span class="tag" title="결제금액 ${t.gross.toLocaleString()}원 − 인센티브 ${(t.incentive||0).toLocaleString()}원">인센티브 차감</span>`:''}</td>
+          <td style="font-size:12px;color:var(--text2);">${t.memo||''} ${t.imported?'<span class="tag">가져오기</span>':''} ${t.settleIn?'<span class="tag" title="개인용도 정산으로 들어온 입금 — 수입 합계에서 제외">정산 입금</span>':''} ${t.settleOut?'<span class="tag" title="정산 받을 돈을 공금 계좌에서 내 계좌로 보낸 출금 — 지출 합계에서 제외">정산 출금</span>':''} ${t.gross!=null?`<span class="tag" title="결제금액 ${t.gross.toLocaleString()}원 − 인센티브 ${(t.incentive||0).toLocaleString()}원">인센티브 차감</span>`:''}</td>
           <td style="font-size:12px;">${txAcc?.name||'-'}${toAcc?' → '+toAcc.name:''}${t.toPfAcctNo?' → 📈 '+((S.accounts.find(a=>a.acctNo===t.toPfAcctNo)||{}).nickname||(S.accounts.find(a=>a.acctNo===t.toPfAcctNo)||{}).name||t.toPfAcctNo):''}</td>
           <td class="r" style="font-family:var(--mono);font-size:12px;">${fAmt(t)}</td>
           ${balCell}
@@ -6479,6 +6504,9 @@ function editLedgerTxn(id) {
         <div id="et-settlein-wrap" style="width:100%;${t.type==='income'?'':'display:none;'}">
           <label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="et-settlein" ${t.settleIn?'checked':''} style="width:auto;margin-right:6px;" />개인용도 정산 입금 (잔액엔 반영, 수입 합계에서는 제외)</label>
         </div>
+        <div id="et-settleout-wrap" style="width:100%;${t.type==='expense'?'':'display:none;'}">
+          <label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="et-settleout" ${t.settleOut?'checked':''} style="width:auto;margin-right:6px;" />정산 받을 돈 지급 출금 (잔액엔 반영, 지출 합계에서는 제외)</label>
+        </div>
       </div>
       <div id="et-expr-preview" style="font-size:11px;color:#1D6FC4;margin-top:4px;min-height:16px;"></div>
       <div class="btn-row" style="margin-top:16px;">
@@ -6556,6 +6584,8 @@ function onEditTypeChange(id) {
   toAcctWrap.style.display = type === 'transfer' ? '' : 'none';
   const siWrap = document.getElementById('et-settlein-wrap');
   if (siWrap) siWrap.style.display = type === 'income' ? '' : 'none';
+  const soWrap = document.getElementById('et-settleout-wrap');
+  if (soWrap) soWrap.style.display = type === 'expense' ? '' : 'none';
 
   // 잔액조정 모드 토글 wrap 표시
   const adjModeWrap = document.getElementById('et-adjust-mode-wrap');
@@ -6716,6 +6746,8 @@ function saveEditedTxn(id) {
   t.memo   = newMemo;
   if (newType === 'income' && document.getElementById('et-settlein')?.checked) t.settleIn = true;
   else delete t.settleIn;
+  if (newType === 'expense' && document.getElementById('et-settleout')?.checked) t.settleOut = true;
+  else delete t.settleOut;
 
   // 유형에 따른 카테고리/받는계좌 처리
   if (newType === 'transfer') {
