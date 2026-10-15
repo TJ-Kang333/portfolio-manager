@@ -1312,6 +1312,7 @@ async function loadFromSheets() {
     migratePersonalTxns();
     migrateIncentiveAmounts();
     migrateBrokenTransferTargets();
+    migrateSettleCats();
     saveLocal();
     setSyncStatus('ok','Sheets에서 불러옴');
     setTimeout(()=>setSyncStatus('idle',''),3000);
@@ -1466,6 +1467,7 @@ async function checkFreshness() {
     if (d.rev != null) setBaseRev(d.rev);
     migrateIncentiveAmounts();
     migrateBrokenTransferTargets();
+    migrateSettleCats();
     saveLocal();
     setSyncStatus('ok', '다른 기기 변경 반영됨');
     setTimeout(()=>setSyncStatus('idle',''), 2500);
@@ -4709,6 +4711,19 @@ function isCountedIncome(t) { return t.type === 'income' && !t.settleIn; }
 // 정산 받을 돈을 공금 계좌에서 내 계좌로 보낸 출금(settleOut)도 마찬가지 — 잔액엔 반영, 지출 합계에서는 제외
 // (그 돈이 쓰인 경기지역화폐 결제는 이미 지출로 잡혀 있으므로 이중 계산 방지)
 function isCountedExpense(t) { return t.type === 'expense' && !t.settleOut; }
+// 정산 입금/출금 표시가 붙은 거래는 카테고리를 "정산"으로 보여준다(집계에서는 어차피 빠짐 — 목록이 "미분류"로 보이지 않게)
+function settleCatId(type) {
+  return type === 'income' ? _ensureLedgerCat('lc_settle_in', '정산', 'income', '#7F8C8D')
+                           : _ensureLedgerCat('lc_settle_out', '정산', 'expense', '#7F8C8D');
+}
+// 이미 표시돼 있는데 카테고리가 비어 있는 거래에 "정산" 카테고리를 한 번 채운다(멱등)
+function migrateSettleCats() {
+  let changed = 0;
+  ledger().txns.forEach(t => {
+    if (!t.catId && ((t.type === 'income' && t.settleIn) || (t.type === 'expense' && t.settleOut))) { t.catId = settleCatId(t.type); changed++; }
+  });
+  if (changed > 0) save();
+}
 
 function ledger() {
   if (!S.ledger) S.ledger = { accounts:[], categories:[], txns:[] };
@@ -5073,7 +5088,7 @@ function settleSelectedPersonal() {
   if (cand) {
     const acc = ld.accounts.find(a => a.id === cand.acctId)?.name || '-';
     if (confirm(`${cand.date} ${acc}에 들어온 입금 ${total.toLocaleString()}원${cand.memo ? ` (${cand.memo})` : ''}을\n이번 정산 입금으로 연결해서 수입 합계에서 뺄까요?`)) {
-      cand.settleIn = true;
+      cand.settleIn = true; cand.catId = settleCatId('income');
     }
   }
   save();
@@ -5457,7 +5472,7 @@ function offerLinkSettleOut(total) {
     return;
   }
   const acc = ld.accounts.find(a => a.id === cand.acctId)?.name || '-';
-  if (confirm(`${cand.date} ${acc}에서 나간 출금 ${total.toLocaleString()}원${cand.memo ? ` (${cand.memo})` : ''}을\n이번 정산금 지급으로 연결해서 지출 합계에서 뺄까요?`)) cand.settleOut = true;
+  if (confirm(`${cand.date} ${acc}에서 나간 출금 ${total.toLocaleString()}원${cand.memo ? ` (${cand.memo})` : ''}을\n이번 정산금 지급으로 연결해서 지출 합계에서 뺄까요?`)) { cand.settleOut = true; cand.catId = settleCatId('expense'); }
 }
 
 // ── 카드 청구 대조 ───────────────────────────────────────────
@@ -6502,10 +6517,10 @@ function editLedgerTxn(id) {
         <div class="fg" style="width:100%;"><label>메모</label>
           <input type="text" id="et-memo" value="${t.memo||''}" /></div>
         <div id="et-settlein-wrap" style="width:100%;${t.type==='income'?'':'display:none;'}">
-          <label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="et-settlein" ${t.settleIn?'checked':''} style="width:auto;margin-right:6px;" />개인용도 정산 입금 (잔액엔 반영, 수입 합계에서는 제외)</label>
+          <label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="et-settlein" ${t.settleIn?'checked':''} onchange="onEditSettleFlag('income', this.checked)" style="width:auto;margin-right:6px;" />개인용도 정산 입금 (잔액엔 반영, 수입 합계에서는 제외)</label>
         </div>
         <div id="et-settleout-wrap" style="width:100%;${t.type==='expense'?'':'display:none;'}">
-          <label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="et-settleout" ${t.settleOut?'checked':''} style="width:auto;margin-right:6px;" />정산 받을 돈 지급 출금 (잔액엔 반영, 지출 합계에서는 제외)</label>
+          <label style="font-size:12px;cursor:pointer;"><input type="checkbox" id="et-settleout" ${t.settleOut?'checked':''} onchange="onEditSettleFlag('expense', this.checked)" style="width:auto;margin-right:6px;" />정산 받을 돈 지급 출금 (잔액엔 반영, 지출 합계에서는 제외)</label>
         </div>
       </div>
       <div id="et-expr-preview" style="font-size:11px;color:#1D6FC4;margin-top:4px;min-height:16px;"></div>
@@ -6559,6 +6574,13 @@ function _editCatOpts(ld, type, selectedCatId) {
     .filter(c => c.type === catType)
     .map(c=>`<option value="${c.id}" ${c.id===selectedCatId?'selected':''}>${c.name}</option>`)
     .join('');
+}
+
+// 수정창에서 "정산 입금/출금"을 체크하면 카테고리를 "정산"으로 맞춘다
+function onEditSettleFlag(type, on) {
+  if (!on) return;
+  const sel = document.getElementById('et-cat');
+  if (sel) sel.innerHTML = _editCatOpts(ledger(), type, settleCatId(type));
 }
 
 function onEditTypeChange(id) {
@@ -8939,6 +8961,7 @@ loadLocal();
 migratePersonalTxns();
 migrateIncentiveAmounts();
 migrateBrokenTransferTargets();
+migrateSettleCats();
 loadFromSheets().then(()=>renderDashboard());
 const _now=new Date();
 document.getElementById('import-month').value=_now.getFullYear()+'-'+String(_now.getMonth()+1).padStart(2,'0');
