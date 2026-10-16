@@ -115,7 +115,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 추가입금마이너스</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 그룹수익률자동입금</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -1791,6 +1791,18 @@ function unitDeposit(month, pfId, groupId) {
   if (typeof d === 'number') return 0; // 구 형식은 그룹 정보 없음
   const key = `${pfId}__${groupId||'null'}`;
   return d[key] || 0;
+}
+// 그 단위(포트폴리오/그룹)에 속한 투자 계좌로 가계부에서 이체해 자동으로 쌓인 입금(_pf_<계좌번호>) 합.
+// 그룹별 수익률은 이 자동 입금도 빼고 계산해야 맞다(안 그러면 이체한 돈이 수익으로 보임).
+function unitAutoDeposit(month, pfId, groupId) {
+  const d = S.deposits && S.deposits[month];
+  if (!d || typeof d === 'number') return 0;
+  const nos = pfId === '__nopf' ? S.accounts.filter(a => !a.portfolioId).map(a => a.acctNo) : filteredAcctNos(pfId, groupId);
+  return nos.reduce((s, no) => s + (d['_pf_' + no] || 0), 0);
+}
+// 수익률 계산용 단위 입금 = 이력 탭에서 직접 넣은 값 + 가계부 이체로 자동 반영된 값
+function unitDepositAll(month, pfId, groupId) {
+  return unitDeposit(month, pfId, groupId) + unitAutoDeposit(month, pfId, groupId);
 }
 
 function saveDepositTotal(month, num) {
@@ -3775,7 +3787,7 @@ function renderHistory() {
     const cur  = unitBalance(month, u);
     const prev = unitBalance(ms[idx-1], u);
     if (prev===0) return null;
-    const dep = unitDeposit(month, u.pfId, u.groupId);
+    const dep = unitDepositAll(month, u.pfId, u.groupId);
     return (cur - prev - dep) / prev * 100;
   }
   function unitCumReturn(month, u) {
@@ -3784,7 +3796,7 @@ function renderHistory() {
     if (first===0) return null;
     // 누적 입금 보정
     const cumDep = ms.slice(1, ms.indexOf(month)+1)
-      .reduce((s,mm) => s + unitDeposit(mm, u.pfId, u.groupId), 0);
+      .reduce((s,mm) => s + unitDepositAll(mm, u.pfId, u.groupId), 0);
     const base = first + cumDep;
     return base>0 ? (cur-base)/base*100 : null;
   }
@@ -3856,6 +3868,7 @@ function renderHistory() {
                 const hasUnits = histUnits.length > 0;
                 const unitInputs = histUnits.map(u => {
                   const ud = unitDeposit(m, u.pfId, u.groupId);
+                  const autoUd = unitAutoDeposit(m, u.pfId, u.groupId);
                   const pfObj = (S.portfolios||[]).find(p=>p.id===u.pfId);
                   const lbl = u.groupId
                     ? (pfObj?.groups?.find(g=>g.id===u.groupId)?.name || u.groupId)
@@ -3867,6 +3880,7 @@ function renderHistory() {
                       oninput="formatDepInput(this)"
                       onchange="saveDepositForUnit('${m}','${u.pfId}','${u.groupId||''}',this.value)" />
                     <button type="button" class="btn-sm" tabindex="-1" onclick="toggleDepSign(this)" title="+/− 바꾸기 (다른 계좌로 옮긴 돈이 빠져나간 쪽은 −)" style="padding:1px 6px;font-size:11px;">±</button>
+                    ${autoUd ? `<span title="가계부에서 이 그룹 계좌로 이체해 자동 반영된 입금 — 수익률 계산에 이미 포함됨" style="font-size:10px;color:var(--text3);white-space:nowrap;">자동 ${autoUd.toLocaleString()}</span>` : ''}
                   </div>`;
                 }).join('');
                 // 그룹이 있으면 전체는 자동합산(읽기전용), 없으면 직접 입력
