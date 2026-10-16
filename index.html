@@ -115,7 +115,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 일별2주</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 기간선택·리밸런싱</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -199,8 +199,15 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
   <!-- 1b) 일별 자산 추이 — Apps Script가 자동 수집한 '자산스냅샷' 시트 기반 -->
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head">
-      <span class="card-title">일별 자산 추이 <span style="font-size:11px;font-weight:400;color:var(--text3);">최근 2주 · 자동 수집 · OKX/은행/주식</span></span>
+      <span class="card-title">일별 자산 추이 <span style="font-size:11px;font-weight:400;color:var(--text3);">자동 수집 · OKX/은행/주식</span></span>
       <span style="display:flex;gap:8px;align-items:center;">
+        <select id="snap-range" onchange="setSnapRange(this.value)" style="font-size:12px;padding:3px 6px;" title="보여줄 기간">
+          <option value="2w">최근 2주</option>
+          <option value="month">이번 달</option>
+          <option value="1m">최근 1개월</option>
+          <option value="3m">최근 3개월</option>
+          <option value="all">전체</option>
+        </select>
         <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;">
           <input type="checkbox" id="snap-stack" onchange="renderSnapshotTrend()" style="cursor:pointer;" /> 출처별 보기
         </label>
@@ -2152,12 +2159,30 @@ function buildSnapshotSeries(rows){
   return { days, totals, bySource, sources };
 }
 
+// 일별 자산 추이 표시 기간: 2w(최근 2주, 기본) / month(이번 달 1일~지금) / 1m / 3m / all. 선택은 기억해 둔다.
+function _snapRange() {
+  let v = '2w';
+  try { v = localStorage.getItem('snap_range') || '2w'; } catch (e) {}
+  return ['2w', 'month', '1m', '3m', 'all'].includes(v) ? v : '2w';
+}
+function setSnapRange(v) {
+  try { localStorage.setItem('snap_range', v); } catch (e) {}
+  renderSnapshotTrend();
+}
+function _snapCutoff(range) {
+  if (range === 'all') return '0000-00-00';
+  if (range === 'month') { const n = new Date(); return n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-01'; }
+  const days = { '2w': 14, '1m': 30, '3m': 90 }[range] || 14;
+  return new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+}
+
 function renderSnapshotTrend(){
   const cv = document.getElementById('snap-trend'); if (!cv) return;
   if (snapTrendCh){ snapTrendCh.destroy(); snapTrendCh = null; }
+  const rangeSel = document.getElementById('snap-range'); if (rangeSel) rangeSel.value = _snapRange();
   if (!_snapRows || !_snapRows.length) return;
-  const full = buildSnapshotSeries(_snapRows); // 마지막 값 이어가기는 전체 이력 기준으로 계산한 뒤 최근 2주만 잘라 보여준다
-  const cutoff = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+  const full = buildSnapshotSeries(_snapRows); // 마지막 값 이어가기는 전체 이력 기준으로 계산한 뒤 선택한 기간만 잘라 보여준다
+  const cutoff = _snapCutoff(_snapRange());
   const from = Math.max(0, full.days.findIndex(d => d >= cutoff));
   const days = full.days.slice(from);
   const totals = full.totals.slice(from);
@@ -3444,6 +3469,19 @@ function applyImport() {
     };
   });
 
+  // CSV는 그 계좌의 "현재 보유 전체"이므로, 같은 달에 이미 들어 있던 이전 종목 중 이번 CSV에 없는 것(매도·리밸런싱으로
+  // 정리된 종목)은 제거한다 — 안 그러면 같은 달에 다시 올릴 때 팔린 종목이 남아 총액이 이중으로 잡힘.
+  // 수동 월말잔고·현금성자산 칸은 건드리지 않음.
+  let pruned = 0;
+  [...new Set(_parsed.map(h => h.acctNo))].forEach(no => {
+    const inCsv = new Set(_parsed.filter(h => h.acctNo === no).map(h => h.ticker));
+    const cur = S.months[month][no] || {};
+    Object.keys(cur).forEach(tk => {
+      if (inCsv.has(tk) || tk === MANUAL_MONTH_KEY || tk === '미래에셋증권현금성자산') return;
+      delete cur[tk]; pruned++;
+    });
+  });
+
   // 예수금/현금 입력 반영
   const acctNos = [...new Set(_parsed.map(h=>h.acctNo))];
   acctNos.forEach(no => {
@@ -3463,7 +3501,7 @@ function applyImport() {
 
   save();
   const msg=document.getElementById('import-msg');
-  msg.textContent=`✓ ${month} 잔고 적용 완료!`;
+  msg.textContent=`✓ ${month} 잔고 적용 완료!` + (pruned ? ` (이번 CSV에 없는 이전 종목 ${pruned}개 정리)` : '');
   setTimeout(()=>{msg.textContent=''; showPage('dashboard');},1200);
 }
 
