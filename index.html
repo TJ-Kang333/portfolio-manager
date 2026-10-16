@@ -115,7 +115,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-15 정산분류</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 일별2주</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -199,7 +199,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
   <!-- 1b) 일별 자산 추이 — Apps Script가 자동 수집한 '자산스냅샷' 시트 기반 -->
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head">
-      <span class="card-title">일별 자산 추이 <span style="font-size:11px;font-weight:400;color:var(--text3);">자동 수집 · OKX/은행/주식</span></span>
+      <span class="card-title">일별 자산 추이 <span style="font-size:11px;font-weight:400;color:var(--text3);">최근 2주 · 자동 수집 · OKX/은행/주식</span></span>
       <span style="display:flex;gap:8px;align-items:center;">
         <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text2);cursor:pointer;">
           <input type="checkbox" id="snap-stack" onchange="renderSnapshotTrend()" style="cursor:pointer;" /> 출처별 보기
@@ -2156,7 +2156,16 @@ function renderSnapshotTrend(){
   const cv = document.getElementById('snap-trend'); if (!cv) return;
   if (snapTrendCh){ snapTrendCh.destroy(); snapTrendCh = null; }
   if (!_snapRows || !_snapRows.length) return;
-  const { days, totals, bySource, sources } = buildSnapshotSeries(_snapRows);
+  const full = buildSnapshotSeries(_snapRows); // 마지막 값 이어가기는 전체 이력 기준으로 계산한 뒤 최근 2주만 잘라 보여준다
+  const cutoff = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+  const from = Math.max(0, full.days.findIndex(d => d >= cutoff));
+  const days = full.days.slice(from);
+  const totals = full.totals.slice(from);
+  const bySource = {};
+  const sources = full.sources.filter(s => {
+    bySource[s] = full.bySource[s].slice(from);
+    return bySource[s].some(v => v != null);
+  });
   const labels = days.map(d => d.slice(5).replace('-','/'));
   const stack = document.getElementById('snap-stack')?.checked;
 
