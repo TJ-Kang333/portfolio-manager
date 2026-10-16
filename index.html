@@ -115,7 +115,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 그룹수익률자동입금</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 수익률입금보정</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -1754,8 +1754,41 @@ function monthDeposit(month) {
   const unitTotal = Object.entries(d)
     .filter(([k]) => k !== '_total')
     .reduce((s, [, v]) => s + (v||0), 0);
-  // 그룹별 값이 없으면 _total 폴백 (구 데이터 호환)
-  return unitTotal > 0 ? unitTotal : (d._total || 0);
+  // 그룹별 값이 없으면 _total 폴백 (구 데이터 호환). 키가 하나라도 있으면 합이 0 이하(출금만 있는 달 등)여도 그 합을 쓴다.
+  const hasKeys = Object.keys(d).some(k => k !== '_total');
+  return hasKeys ? unitTotal : (d._total || 0);
+}
+// 단위(포트폴리오/그룹) 입금이 전부 자녀 계좌로 가는 것인지
+function _unitAllChild(pfId, groupId) {
+  const childNos = childAcctNos();
+  const nos = pfId === '__nopf' ? S.accounts.filter(a => !a.portfolioId).map(a => a.acctNo)
+                                : filteredAcctNos(pfId, groupId === 'null' ? null : groupId);
+  return nos.length > 0 && nos.every(no => childNos.has(no));
+}
+// 수익률 계산용 입금: 총자산이 다루는 범위와 같은 범위의 입금만 센다.
+//  · 전체(pfId 없음): 총자산이 자녀 계좌를 빼므로 자녀 계좌(또는 자녀 전용 그룹)로 간 입금도 뺀다.
+//  · 포트폴리오/그룹 선택: 그 범위에 속한 계좌의 자동 입금(_pf_) + 그 범위 그룹 칸에 직접 넣은 값.
+function scopedDeposit(month, pfId, groupId) {
+  const d = S.deposits && S.deposits[month];
+  if (!d) return 0;
+  if (typeof d === 'number') return pfId ? 0 : d;
+  if (pfId) {
+    let sum = 0;
+    if (groupId) sum += d[`${pfId}__${groupId}`] || 0;
+    else Object.keys(d).forEach(k => { if (k.startsWith(pfId + '__')) sum += d[k] || 0; });
+    filteredAcctNos(pfId, groupId).forEach(no => { sum += d['_pf_' + no] || 0; });
+    return sum;
+  }
+  const childNos = childAcctNos();
+  let sum = 0, hasKeys = false;
+  Object.entries(d).forEach(([k, v]) => {
+    if (k === '_total') return;
+    hasKeys = true;
+    if (k.startsWith('_pf_')) { if (childNos.has(k.slice(4))) return; }
+    else { const i = k.indexOf('__'); if (i > 0 && _unitAllChild(k.slice(0, i), k.slice(i + 2))) return; }
+    sum += v || 0;
+  });
+  return hasKeys ? sum : (d._total || 0);
 }
 
 // ── 배당·이자(투자 수익) 연계 ─────────────────────────────
@@ -1876,12 +1909,13 @@ function updateDepTotalDisplay(month) {
   totalEl.style.fontWeight = total > 0 ? '600' : '400';
 }
 
-function monthReturn(month) {
+// pfId/groupId 를 주면 그 포트폴리오/그룹만의 수익률(그 범위의 잔고·입금 기준), 안 주면 전체(자녀 제외).
+function monthReturn(month, pfId, groupId) {
   const ms=sortedMonths(), idx=ms.indexOf(month);
   if(idx<=0) return null;
-  const prev=ms[idx-1], curT=monthTotal(month), prevT=monthTotal(prev);
-  const added=monthDeposit(month);
-  const swept=investIncomeSwept(month); // 배당·이자로 났지만 잔고 밖으로 빠진 수익 → 되더함
+  const prev=ms[idx-1], curT=pfTotal(month, pfId, groupId), prevT=pfTotal(prev, pfId, groupId);
+  const added=scopedDeposit(month, pfId, groupId);
+  const swept=pfId ? 0 : investIncomeSwept(month); // 배당·이자로 났지만 잔고 밖으로 빠진 수익 → 되더함(개별 포트폴리오엔 배분 불가)
   if(prevT+added===0) return null;
   return (curT+swept-prevT-added)/(prevT+added)*100;
 }
@@ -2280,11 +2314,11 @@ function renderDashboard() {
 
   const groupId = S.activeGroupId;
   const total = month ? pfTotal(month, pfId, groupId) : 0;
-  const mr = month ? monthReturn(month) : null;
+  const mr = month ? monthReturn(month, pfId, groupId) : null;
   const ms0 = sortedMonths(), firstT = ms0.length ? pfTotal(ms0[0], pfId, groupId) : 0;
   const monthIdx = month ? ms0.indexOf(month) : -1;
   let cumDeposit = 0, cumSwept = 0;
-  if (monthIdx > 0) for (let i=1; i<=monthIdx; i++) { cumDeposit += monthDeposit(ms0[i]); cumSwept += investIncomeSwept(ms0[i]); }
+  if (monthIdx > 0) for (let i=1; i<=monthIdx; i++) { cumDeposit += scopedDeposit(ms0[i], pfId, groupId); cumSwept += investIncomeSwept(ms0[i]); }
   const baseAmt = firstT + cumDeposit;
   // 배당·이자 보정은 전체 자산 화면에서만 (개별 포트폴리오엔 배분 불가)
   const cumR = baseAmt>0 && total>0 ? (total + (pfId?0:cumSwept) - baseAmt)/baseAmt*100 : null;
@@ -2312,7 +2346,11 @@ function renderDashboard() {
     if (baseYearTotal > 0 && total > 0) {
       let yearSwept = 0;
       if (!pfId) yearMs.forEach(m => { if (m <= month) yearSwept += investIncomeSwept(m); });
-      yearR = (total - baseYearTotal + yearSwept) / baseYearTotal * 100;
+      // 기준 월 이후 올해 들어온 추가 입금은 수익이 아니므로 누적 수익률과 같은 방식으로 뺀다
+      const baseMonth = prevYearMs.length > 0 ? prevYearMs.at(-1) : firstYearMonth;
+      let yearDep = 0;
+      ms0.forEach(m => { if (m > baseMonth && m <= month) yearDep += scopedDeposit(m, pfId, groupId); });
+      yearR = (total - baseYearTotal - yearDep + yearSwept) / (baseYearTotal + yearDep) * 100;
     }
   }
 
@@ -3826,7 +3864,7 @@ function renderHistory() {
   // 누적 입금을 순서대로 미리 계산
   const cumDeps = ms.map((m,i) => {
     if (i===0) return 0;
-    return ms.slice(1, i+1).reduce((s, mm) => s + monthDeposit(mm), 0);
+    return ms.slice(1, i+1).reduce((s, mm) => s + scopedDeposit(mm), 0); // 총자산이 자녀 제외이므로 입금도 자녀 제외
   });
   // 누적 배당·이자(잔고 밖으로 빠진 것) — 누적 수익률 보정용
   const cumSweptHist = ms.map((m,i) =>
