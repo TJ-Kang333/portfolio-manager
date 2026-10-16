@@ -163,6 +163,7 @@ function extractAlertText(msg) {
 function normalizeSourceHint(s) {
   s = String(s || '').toLowerCase().trim();
   if (!s) return '';
+  if (/samsung|삼성/.test(s))                      return 'samsung';
   if (/hyundai|현대카드/.test(s))                 return 'hyundai';
   if (/gyeonggi|경기|지역화폐|사랑화폐/.test(s))  return 'gyeonggi';
   if (/hana.?card|하나카드/.test(s))               return 'hana_card';
@@ -233,6 +234,17 @@ function resolveDate(mm, dd, msgDate) {
 }
 
 const ALERT_PARSERS = [
+
+  // ── 삼성카드 승인/취소 문자 ─────────────────────────────
+  //  [문자] 삼성1234승인 홍*동 15,000원 일시불 10/16 12:34 스타벅스 누적1,234,567원  (한 줄 또는 줄 단위)
+  //  가맹점명에 "삼성"이 든 다른 카드 알림(삼성전자 결제 등)을 잘못 잡지 않도록, "삼성1234승인" 같은
+  //  카드 표기나 "삼성카드"+승인/취소 일 때만 식별한다. 현대카드보다 먼저 검사(가맹점명에 "현대"가 든 문자 대비).
+  {
+    name: '삼성카드',
+    srcKey: 'samsung',
+    match: t => /삼성\s*\d{4}\s*(해외)?\s*(승인|취소)/.test(t) || (/삼성카드/.test(t) && /(승인|취소)/.test(t)),
+    parse: (t, msgDate) => parseSamsungCard(t, msgDate),
+  },
 
   // ── 현대카드 승인/취소 — 문자·앱 알림 두 형식 다 지원 ──────
   //  [문자]  [Web발신] / 현대 MX Black 승인 / 강*준 / 77,950원 일시불 /
@@ -415,6 +427,47 @@ const ALERT_PARSERS = [
 
 ];
 
+// 삼성카드 문자 파서. 한 줄/여러 줄 어느 쪽이든 같은 방식으로 읽는다:
+//  금액 = "누적…" 부분을 뺀 첫 "N원", 날짜·시각 = "M/D HH:MM", 가맹점 = 시각 뒤 ~ 누적/한도 앞.
+//  원화 금액이 없는 해외승인은 외화 금액만 남기고 amount=0 으로 기록(현대카드 해외승인과 같은 방식).
+//  "누적N원"이 이번 결제주기 사용액인지 확실치 않아 카드 잔액 기준점(balance)으로는 쓰지 않는다.
+function parseSamsungCard(t, msgDate) {
+  if (/승인\s*거절|결제\s*실패|한도\s*초과/.test(t)) return { skip: true };
+  const isCancel = /취소/.test(t);
+  const flat = t.replace(/\s+/g, ' ').trim();
+  const noAccum = flat.replace(/누적\s*:?\s*[\d,]+\s*원?/g, ' ');
+
+  const dm = noAccum.match(/(\d{1,2})[\/.](\d{1,2})\s+(\d{1,2}):(\d{2})/);
+  const date = dm ? resolveDate(parseInt(dm[1], 10), parseInt(dm[2], 10), msgDate)
+                   : Utilities.formatDate(msgDate || new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+
+  let merchant = '';
+  if (dm) {
+    const after = noAccum.slice(noAccum.indexOf(dm[0]) + dm[0].length);
+    merchant = after.split(/잔여|한도|※|\(광고|문의|고객센터/)[0].trim();
+  }
+  if (!merchant) { // 시각 뒤에 없으면 줄 단위로 보일러플레이트가 아닌 첫 줄
+    const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
+    const isBoiler = l => !/[가-힣A-Za-z]/.test(l) || /(승인|취소|누적|Web발신)/.test(l) || /삼성/.test(l) ||
+      /[\d,]+\s*원/.test(l) || /^\d{1,2}[\/.]\d/.test(l) || /^[가-힣]\*[가-힣]님?$/.test(l);
+    merchant = lines.find(l => !isBoiler(l)) || '';
+  }
+
+  const am = noAccum.match(/([\d,]+)\s*원/);
+  const krw = am ? parseInt(am[1].replace(/,/g, ''), 10) : 0;
+  if (krw > 0) return { type: isCancel ? 'income' : 'expense', amount: krw, merchant, source: '삼성카드', date, balance: null };
+
+  const fx = /해외/.test(t) && noAccum.match(/(?:^|\s)([A-Z]{3})\s*([\d,]+(?:\.\d+)?)(?=\s|$)/);
+  if (fx) {
+    return {
+      type: isCancel ? 'income' : 'expense', amount: 0, forceAccept: true,
+      merchant: (merchant || '해외결제') + ' (' + fx[1] + ' ' + fx[2] + ', 환전 전)',
+      source: '삼성카드', date, balance: null,
+    };
+  }
+  return null;
+}
+
 // 우리은행/하나은행 공용 파서 — 배열 순서(금액↔유형)가 은행마다 달라 순서 무관 정규식으로 처리
 function parseBankAlert(t, msgDate, sourceLabel) {
   // 방향 판정: [입금]/[출금] 대괄호 형태 우선.
@@ -570,13 +623,27 @@ function _testParser() {
       'GBP 11.45 · 해외승인',
       '강태준 님, 현대 대한항공120 해외승인 9/18 23:01',
     ].join('\n'),
+    // ── 삼성카드 문자 — ⚠️ 아래는 일반적인 삼성카드 문자 형태를 가정한 샘플. 실제 문자 원문으로 확인 필요 ──
+    삼성카드_승인_한줄: '[Web발신]\n삼성1234승인 홍*동 15,000원 일시불 10/16 12:34 스타벅스 누적1,234,567원',
+    삼성카드_승인_여러줄: [
+      '[Web발신]', '삼성1234승인', '홍*동', '15,000원 일시불', '10/16 12:34', '스타벅스', '누적1,234,567원',
+    ].join('\n'),
+    삼성카드_취소: '[Web발신]\n삼성1234취소 홍*동 15,000원 일시불 10/16 12:40 스타벅스',
+    삼성카드_해외: '[Web발신]\n삼성1234해외승인 홍*동 USD 12.34 10/16 12:34 AMAZON.COM',
+    삼성카드_광고: '(광고) 삼성카드 10월 혜택 안내 승인 시 5,000원 캐시백',
+    // 가맹점이 "삼성전자"인 현대카드 알림은 삼성카드로 오인되면 안 됨
+    현대카드_삼성전자가맹점: [
+      '삼성전자(주)', '5,900원 · 일반승인', '강태준 님, 현대 MX Black 승인 일시불, 10/8 13:00', '누적5,093,523원',
+    ].join('\n'),
   };
   // source 힌트를 강제해도(=forced) 광고는 걸러지는지까지 확인
   const hints = { 우리은행_출금: 'woori', 우리은행_입금: 'woori', 우리은행_타계좌: 'woori',
                   우리은행_광고: 'woori', 하나은행_입금: 'hana_bank',
                   현대카드_앱알림_의원상호: 'hyundai', 현대카드_앱알림_풀무원: 'hyundai',
                   지역화폐_광고: 'gyeonggi', 현대카드_자동납부_관리비: 'hyundai',
-                  현대카드_대한항공120_국내: 'hyundai', 현대카드_대한항공120_해외: 'hyundai' };
+                  현대카드_대한항공120_국내: 'hyundai', 현대카드_대한항공120_해외: 'hyundai',
+                  삼성카드_승인_한줄: 'samsung', 삼성카드_승인_여러줄: 'samsung', 삼성카드_취소: 'samsung',
+                  삼성카드_해외: 'samsung', 삼성카드_광고: 'samsung', 현대카드_삼성전자가맹점: 'hyundai' };
   Object.keys(cases).forEach(k => {
     Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1), hints[k])));
   });
