@@ -115,7 +115,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 기간선택·리밸런싱</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 추가입금마이너스</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -3862,19 +3862,21 @@ function renderHistory() {
                     : (pfObj?.name || u.label);
                   return `<div style="display:flex;align-items:center;gap:4px;margin-top:3px;">
                     <span style="font-size:10px;color:var(--text3);white-space:nowrap;min-width:60px;text-align:right;">${lbl}</span>
-                    <input type="text" inputmode="numeric" value="${ud?ud.toLocaleString():''}"
+                    <input type="text" inputmode="numeric" data-signed="1" value="${ud?ud.toLocaleString():''}"
                       placeholder="0" style="width:90px;text-align:right;font-family:var(--mono);font-size:11px;padding:2px 6px;"
                       oninput="formatDepInput(this)"
                       onchange="saveDepositForUnit('${m}','${u.pfId}','${u.groupId||''}',this.value)" />
+                    <button type="button" class="btn-sm" tabindex="-1" onclick="toggleDepSign(this)" title="+/− 바꾸기 (다른 계좌로 옮긴 돈이 빠져나간 쪽은 −)" style="padding:1px 6px;font-size:11px;">±</button>
                   </div>`;
                 }).join('');
                 // 그룹이 있으면 전체는 자동합산(읽기전용), 없으면 직접 입력
                 const totalInput = hasUnits
                   ? `<div id="dep-${m}" style="width:110px;text-align:right;font-family:var(--mono);font-size:12px;padding:4px 8px;color:var(--text2);background:var(--surface2);border:1px solid var(--border2);border-radius:var(--radius);display:inline-block;">${totalDep?totalDep.toLocaleString():'-'}</div>
                      <span style="font-size:9px;color:var(--text3);display:block;margin-top:2px;">그룹 합산 자동계산</span>`
-                  : `<input type="text" inputmode="numeric" id="dep-${m}" value="${totalDep?totalDep.toLocaleString():''}"
+                  : `<input type="text" inputmode="numeric" data-signed="1" id="dep-${m}" value="${totalDep?totalDep.toLocaleString():''}"
                       placeholder="0" style="width:110px;text-align:right;font-family:var(--mono);font-size:12px;padding:4px 8px;"
-                      oninput="formatDepInput(this)" onchange="saveDeposit('${m}',this.value)" />`;
+                      oninput="formatDepInput(this)" onchange="saveDeposit('${m}',this.value)" />
+                     <button type="button" class="btn-sm" tabindex="-1" onclick="toggleDepSign(this)" title="+/− 바꾸기" style="padding:1px 6px;font-size:11px;">±</button>`;
                 return `<div>
                   ${totalInput}
                   <div id="dep-unit-${m}" style="display:block;padding-top:4px;border-top:1px solid var(--border2);margin-top:4px;">${unitInputs}</div>
@@ -3892,10 +3894,23 @@ function renderHistory() {
     }).join('');
 }
 
+// data-signed="1" 인 칸(추가 입금 등)은 맨 앞 "-"를 지우지 않고 남긴다 — 예전엔 "-"만 치면 숫자가 없다고 보고
+// 바로 비워버려서 마이너스를 직접 입력할 수 없었음(붙여넣기만 가능).
 function formatDepInput(el) {
-  const raw = el.value.replace(/[^0-9-]/g,'');
-  const num = parseInt(raw,10);
-  el.value = isNaN(num) ? '' : num.toLocaleString();
+  const v = el.value;
+  const neg = el.dataset && el.dataset.signed === '1' && /^\s*-/.test(v);
+  const digits = v.replace(/[^0-9]/g, '');
+  if (!digits) { el.value = neg ? '-' : ''; return; }
+  el.value = (neg ? '-' : '') + parseInt(digits, 10).toLocaleString();
+}
+// "±" 버튼: 바로 앞 입력칸의 부호를 뒤집고 저장(폰 숫자 키패드엔 "-" 키가 없는 경우가 많음)
+function toggleDepSign(btn) {
+  const el = btn.previousElementSibling; if (!el) return;
+  const v = el.value.trim();
+  if (v === '') { el.value = '-'; el.focus(); return; }
+  el.value = v.startsWith('-') ? v.slice(1) : '-' + v;
+  formatDepInput(el);
+  el.dispatchEvent(new Event('change'));
 }
 function saveDeposit(month, val) {
   const num = parseInt(String(val).replace(/[^0-9-]/g,''), 10);
