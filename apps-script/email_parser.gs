@@ -432,6 +432,10 @@ const ALERT_PARSERS = [
 //  원화 금액이 없는 해외승인은 외화 금액만 남기고 amount=0 으로 기록(현대카드 해외승인과 같은 방식).
 //  "누적N원"이 이번 결제주기 사용액인지 확실치 않아 카드 잔액 기준점(balance)으로는 쓰지 않는다.
 function parseSamsungCard(t, msgDate) {
+  // 문자 앱 "알림"으로 받을 땐 제목/본문/큰 본문이 같은 내용으로 겹쳐 올 수 있다 — 카드 표기("삼성8588승인")가
+  // 두 번째로 나오는 지점부터는 같은 문자의 반복이므로 잘라낸다. (이게 없으면 가맹점이 반복된 글자로 오염됨)
+  const mk = [...t.matchAll(/삼성\s*\d{4}\s*(?:해외)?\s*(?:승인|취소)/g)];
+  if (mk.length > 1) t = t.slice(0, mk[1].index);
   if (/승인\s*거절|결제\s*실패|한도\s*초과/.test(t)) return { skip: true };
   const isCancel = /취소/.test(t);
   const flat = t.replace(/\s+/g, ' ').trim();
@@ -443,8 +447,9 @@ function parseSamsungCard(t, msgDate) {
 
   let merchant = '';
   if (dm) {
-    const after = noAccum.slice(noAccum.indexOf(dm[0]) + dm[0].length);
-    merchant = after.split(/잔여|한도|※|\(광고|문의|고객센터/)[0].trim();
+    // 시각 뒤 ~ 누적/한도 앞. (누적을 지운 noAccum 이 아니라 원문 flat 기준으로 잘라야, 뒤에 이어 붙은 다른 줄이 안 섞임)
+    const after = flat.slice(flat.indexOf(dm[0]) + dm[0].length);
+    merchant = after.split(/누적|잔여|한도|※|\(광고|문의|고객센터/)[0].trim();
   }
   if (!merchant) { // 시각 뒤에 없으면 줄 단위로 보일러플레이트가 아닌 첫 줄
     const lines = t.split('\n').map(s => s.trim()).filter(Boolean);
@@ -628,6 +633,12 @@ function _testParser() {
     삼성카드_승인_실제: [
       '삼성8588승인 강*준', '39,600원 일시불', '10/19 19:01 스시노칸도시흥플', '누적262,690원',
     ].join('\n'),
+    // 문자 앱 "알림"으로 받을 때: 제목 + 본문 + 큰 본문이 겹쳐 오는 경우 (2026-10-25 실제 문자: "삼성카드 승인안내" 제목, "알림" 소제목)
+    삼성카드_알림_겹침: [
+      '삼성카드 승인안내',
+      '삼성8588승인 강*준 7,000원 일시불 10/25 11:16 365제이에스JS소아 누적282,570원',
+      '알림', '삼성8588승인 강*준', '7,000원 일시불', '10/25 11:16 365제이에스JS소아', '누적282,570원',
+    ].join('\n'),
     // ⚠️ 아래는 일반적인 형태를 가정한 샘플(취소·해외 등 실제 문자 원문은 아직 미확인)
     삼성카드_승인_한줄: '[Web발신]\n삼성1234승인 홍*동 15,000원 일시불 10/16 12:34 스타벅스 누적1,234,567원',
     삼성카드_승인_여러줄: [
@@ -647,7 +658,7 @@ function _testParser() {
                   현대카드_앱알림_의원상호: 'hyundai', 현대카드_앱알림_풀무원: 'hyundai',
                   지역화폐_광고: 'gyeonggi', 현대카드_자동납부_관리비: 'hyundai',
                   현대카드_대한항공120_국내: 'hyundai', 현대카드_대한항공120_해외: 'hyundai',
-                  삼성카드_승인_실제: 'samsung', 삼성카드_승인_한줄: 'samsung', 삼성카드_승인_여러줄: 'samsung', 삼성카드_취소: 'samsung',
+                  삼성카드_승인_실제: 'samsung', 삼성카드_알림_겹침: 'samsung', 삼성카드_승인_한줄: 'samsung', 삼성카드_승인_여러줄: 'samsung', 삼성카드_취소: 'samsung',
                   삼성카드_해외: 'samsung', 삼성카드_광고: 'samsung', 현대카드_삼성전자가맹점: 'hyundai' };
   Object.keys(cases).forEach(k => {
     Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1), hints[k])));
