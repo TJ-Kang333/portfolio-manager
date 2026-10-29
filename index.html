@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-29 현대카드이용기간14일</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-29 명세서대조</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -954,6 +954,20 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
       </a>
       <span style="font-size:11px;color:var(--text3);">카드 내역의 거래처 내용이 불분명할 때 참고</span>
     </div>
+    <!-- 카드 명세서 대조: 명세서를 가계부(알림으로 들어온 거래)와 맞춰서 빠진 것·해외결제 원화 금액을 채운다 -->
+    <div class="card" id="l-stmt-card" style="margin-bottom:14px;">
+      <div class="card-head">
+        <span class="card-title">📑 카드 명세서 대조</span>
+        <span style="font-size:11px;color:var(--text3);">명세서를 올리면 가계부와 맞춰서 빠진 거래 추가 · 해외결제 원화 금액 채우기를 한 번에 (현대카드 이용대금명세서)</span>
+      </div>
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;">
+        <div class="fg" style="width:200px;"><label>대상 카드 계좌</label><select id="l-stmt-acct"></select></div>
+        <label for="l-stmt-file" class="btn btn-primary" style="cursor:pointer;margin:0;">명세서 파일 선택 (.xls)</label>
+        <input type="file" id="l-stmt-file" accept=".xls,.html,.htm,*/*" style="display:none;" onchange="handleStatementFile(this)" />
+      </div>
+      <div id="l-stmt-result"></div>
+    </div>
+
     <div class="card" style="margin-bottom:14px;">
       <div class="card-head">
         <span class="card-title">은행 / 카드사 CSV 가져오기</span>
@@ -5013,7 +5027,7 @@ function showLedgerTab(tab) {
   if (tab === 'txn')        { renderLedgerTxnList(); populateLedgerTxnForm(); renderTemplates(); }
   if (tab === 'accounts')   renderLedgerAccounts();
   if (tab === 'categories') renderLedgerCategories();
-  if (tab === 'import')     { populateLedgerImportAcct(); populateLedgerEmailAcct(); }
+  if (tab === 'import')     { populateLedgerImportAcct(); populateLedgerEmailAcct(); populateStmtAcct(); }
 }
 
 function renderLedger() {
@@ -7637,6 +7651,240 @@ function applyEmailTxns() {
 // ── CSV 가져오기 ──────────────────────────────────────────────
 let _lCsvParsed = null;
 
+// ── 카드 명세서 대조 ─────────────────────────────────────────
+// 카드 알림은 가끔 누락되고(예: 하루 통째로), 해외결제는 원화 금액을 모르고, 하이패스 통행료는 알림이 아예 없다.
+// 명세서(엑셀)를 올리면 가계부의 그 카드 거래와 "날짜(±3일) + 금액"으로 짝을 지어, 짝이 없는 것만 골라서
+//  · 해외결제 0원 거래 → 명세서의 원화 청구 금액으로 채우기 (외화 금액이 같으면 1:1, 한 건이 둘로 나뉘면 비율로 배분)
+//  · 가계부에 없는 거래 → 추가 (취소 쌍은 서로 상쇄되므로 건너뜀)
+// 을 제안한다. 이름이 달라도(예: "쿠팡" vs "한국정보통신 - 쿠팡") 금액·날짜로 맞추므로 중복이 생기지 않는다.
+let _stmt = null;
+const _stmtNorm = s => String(s || '').toLowerCase().replace(/[^0-9a-z가-힣]/g, '');
+const _stmtDays = (a, b) => Math.abs((new Date(a) - new Date(b)) / 86400000);
+const _stmtShift = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };
+const _stmtNum = s => parseFloat(String(s).replace(/,/g, ''));
+function _stmtFx(memo) { // 가계부 메모의 "(GBP 90.00 …" / "USD:22.00" 에서 통화·외화 금액
+  const m = String(memo || '').match(/(?:^|[\s(])([A-Z]{3})\s*[: ]\s*([\d,]+(?:\.\d+)?)/);
+  return m ? { cur: m[1], amt: _stmtNum(m[2]) } : null;
+}
+function _stmtBaseName(memo) { return String(memo || '').replace(/\s*\(.*$/, '').trim(); }
+// 가맹점 이름이 서로 비슷한지(한쪽이 다른 쪽을 포함하거나 3글자 이상 겹침). 알림과 명세서는 이름 표기가 달라서(예: "쿠팡" vs
+// "한국정보통신 - 쿠팡") 완전 일치는 요구하지 않는다. 날짜가 하루라도 다른 짝을 지을 때만 쓴다(같은 금액의 다른 가게 방지).
+function _stmtSim(a, b) {
+  const x = _stmtNorm(a), y = _stmtNorm(b);
+  if (!x || !y) return false;
+  if (x.includes(y) || y.includes(x)) return true;
+  const [s, l] = x.length <= y.length ? [x, y] : [y, x];
+  for (let i = 0; i + 3 <= s.length; i++) if (l.includes(s.slice(i, i + 3))) return true;
+  return false;
+}
+
+function populateStmtAcct() {
+  const sel = document.getElementById('l-stmt-acct'); if (!sel) return;
+  const cards = ledger().accounts.filter(a => a.type === 'card');
+  const prev = sel.value;
+  sel.innerHTML = cards.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+  const pick = (prev && cards.find(a => a.id === prev)) || cards.find(a => /현대카드/.test(a.name)) || cards[0];
+  if (pick) sel.value = pick.id;
+}
+
+function stmtParseHyundai(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const rows = []; let bill = null, discount = null;
+  doc.querySelectorAll('tr').forEach(tr => {
+    const cells = [...tr.querySelectorAll('th,td')].map(c => c.textContent.replace(/\s+/g, ' ').trim());
+    if (!cells.length) return;
+    // 칸 순서: 이용일 | 이용카드 | 이용가맹점 | 이용금액(취소는 음수) | 할부 | 적립율 | 예상적립/할인 | 결제원금 | 결제후잔액 | 수수료
+    const dm = cells[0].match(/^(\d{4})년\s*(\d{2})월\s*(\d{2})일$/);
+    if (dm) {
+      const amt = parseInt(String(cells[3] || '').replace(/,/g, ''), 10);
+      if (!amt) return;                                            // "Shopping Zone 10% 할인 0" 같은 안내줄
+      let name = (cells[2] || '').trim(), foreign = null;
+      const fm = name.match(/^(.*?)\s*,\s*([A-Z]{3})\s*:\s*([\d,]+(?:\.\d+)?)$/); // 해외: "가맹점,GBP:90.00"
+      if (fm) { name = fm[1].trim(); foreign = { cur: fm[2], amt: _stmtNum(fm[3]) }; }
+      rows.push({ date: `${dm[1]}-${dm[2]}-${dm[3]}`, card: cells[1] || '', name, amt, foreign });
+      return;
+    }
+    // 합계 줄: "청 구 할 인 소계"(예상적립/할인 칸 = 음수), "총 합계"(결제원금 칸 = 청구액)
+    const line = cells.join(' '), n = i => parseInt(String(cells[i] || '').replace(/,/g, ''), 10) || 0;
+    if (/총\s*합계/.test(line)) bill = n(7);
+    if (/청\s*구\s*할\s*인/.test(line)) discount = Math.min(n(6), 0);
+  });
+  if (!rows.length) return null;
+  const dates = rows.map(r => r.date).sort();
+  return { rows, bill, discount, start: dates[0], end: dates[dates.length - 1], total: rows.reduce((s, r) => s + r.amt, 0) };
+}
+
+// 합이 목표가 되는 부분집합(크기 2~4)을 찾는다 (한 건이 둘로 나뉘어 온 경우용)
+function _stmtSubset(items, target, tol, maxSize) {
+  const n = items.length;
+  const rec = (start, picked, sum) => {
+    if (picked.length >= 2 && Math.abs(sum - target) <= tol) return picked.slice();
+    if (picked.length >= maxSize) return null;
+    for (let i = start; i < n; i++) {
+      if (sum + items[i].v > target + tol) continue;
+      picked.push(items[i]); const r = rec(i + 1, picked, sum + items[i].v); picked.pop(); if (r) return r;
+    }
+    return null;
+  };
+  return rec(0, [], 0);
+}
+
+function stmtReconcile(parsed, accId) {
+  const ld = ledger();
+  const lo = _stmtShift(parsed.start, -7), hi = _stmtShift(parsed.end, 7);
+  const pool = ld.txns.filter(t => t.acctId === accId && ['expense', 'personal', 'income'].includes(t.type) && !t.cardAdj && t.date >= lo && t.date <= hi)
+    .map(t => ({ t, used: false, fx: _stmtFx(t.memo) }));
+  const plan = { parsed, accId, matched: 0, fills: [], adds: [], skips: [], extras: [] };
+  const take = (p) => { p.used = true; };
+  const rows = parsed.rows.slice().sort((a, b) => a.date.localeCompare(b.date) || a.amt - b.amt);
+
+  // 1) 국내 + 취소: 날짜(±3일) + 금액이 같은 가계부 거래와 짝짓기
+  const leftover = [];
+  rows.filter(r => !r.foreign).forEach(r => {
+    const isCancel = r.amt < 0, abs = Math.abs(r.amt);
+    let best = null, bd = 99;
+    pool.forEach(p => {
+      if (p.used || p.t.amount !== abs) return;
+      if ((p.t.type === 'income') !== isCancel) return;
+      const d = _stmtDays(p.t.date, r.date);
+      if (d > 3 || (d > 0 && !_stmtSim(p.t.memo, r.name))) return;   // 날짜가 다르면 이름도 비슷해야 같은 거래로 본다
+      if (d < bd) { best = p; bd = d; }
+    });
+    if (best) { take(best); plan.matched++; } else leftover.push(r);
+  });
+
+  // 2) 해외: 원화 청구 금액을 채우거나(0원 거래), 이미 채워진 것과 짝짓기
+  rows.filter(r => r.foreign).forEach(r => {
+    const f = r.foreign, near = (p, days) => _stmtDays(p.t.date, r.date) <= days;
+    const sameFx = p => p.fx && p.fx.cur === f.cur;
+    let p = pool.find(x => !x.used && x.t.amount === r.amt && sameFx(x) && Math.abs(x.fx.amt - f.amt) < 0.005 && near(x, 10));
+    if (p) { take(p); plan.matched++; return; }                                  // 이미 채워진 건
+    p = pool.find(x => !x.used && x.t.amount === 0 && sameFx(x) && Math.abs(x.fx.amt - f.amt) < 0.005 && near(x, 7));
+    if (p) { take(p); plan.fills.push({ id: p.t.id, krw: r.amt, row: r, oldMemo: p.t.memo, newMemo: `${_stmtBaseName(p.t.memo)} (${f.cur} ${f.amt.toFixed(2)})`, note: '외화 금액 일치' }); return; }
+    const filled = pool.filter(x => !x.used && x.t.amount > 0 && sameFx(x) && near(x, 10)).map(x => Object.assign(x, { v: x.fx.amt }));
+    let sub = _stmtSubset(filled, f.amt, 0.005, 4);
+    if (sub && Math.abs(sub.reduce((s, x) => s + x.t.amount, 0) - r.amt) <= 2) { sub.forEach(take); plan.matched++; return; } // 나뉘어 이미 채워진 건
+    const zeros = pool.filter(x => !x.used && x.t.amount === 0 && sameFx(x) && near(x, 7)).map(x => Object.assign(x, { v: x.fx.amt }));
+    sub = _stmtSubset(zeros, f.amt, 0.005, 4);
+    if (sub) {                                                                    // 한 건이 둘 이상으로 나뉨 → 외화 비율로 원화 배분
+      const tot = sub.reduce((s, x) => s + x.v, 0); let left = r.amt;
+      sub.forEach((x, i) => {
+        const krw = i === sub.length - 1 ? left : Math.round(r.amt * x.v / tot); left -= krw; take(x);
+        plan.fills.push({ id: x.t.id, krw, row: r, oldMemo: x.t.memo, newMemo: `${_stmtBaseName(x.t.memo)} (${f.cur} ${x.v.toFixed(2)} · 명세서 ${f.amt.toFixed(2)} 중 배분)`, note: `명세서 ${f.amt.toFixed(2)} ${f.cur} 한 건을 나눔` });
+      });
+      return;
+    }
+    const nm = _stmtNorm(r.name);                                                  // 이름이 같고 외화 금액만 다른 경우(예: 보증금 승인 후 실제 청구)
+    p = nm.length >= 4 ? pool.find(x => !x.used && x.t.amount === 0 && near(x, 10) && (() => { const b = _stmtNorm(_stmtBaseName(x.t.memo)); return b.length >= 4 && (b.includes(nm) || nm.includes(b)); })()) : null;
+    if (p) { take(p); plan.fills.push({ id: p.t.id, krw: r.amt, row: r, oldMemo: p.t.memo, newMemo: `${_stmtBaseName(p.t.memo)} (${f.cur} ${f.amt.toFixed(2)} 최종 청구 · 알림 금액과 다름)`, note: `알림 ${p.fx ? p.fx.cur + ' ' + p.fx.amt.toFixed(2) : ''} → 명세서 ${f.cur} ${f.amt.toFixed(2)} (이름이 같아 연결)` }); return; }
+    leftover.push(r);                                                              // 가계부에 없는 해외결제
+  });
+
+  // 3) 짝이 없는 명세서 줄 → 추가 후보 (취소 쌍은 서로 상쇄되므로 건너뜀)
+  const pos = leftover.filter(r => r.amt > 0), neg = leftover.filter(r => r.amt < 0), pairedNeg = new Set();
+  pos.forEach(r => {
+    const c = neg.find(n => !pairedNeg.has(n) && -n.amt === r.amt && _stmtDays(n.date, r.date) <= 7 && _stmtNorm(n.name) === _stmtNorm(r.name));
+    if (c) { pairedNeg.add(c); r._paired = true; plan.skips.push({ pos: r, neg: c }); }
+  });
+  leftover.forEach(r => {
+    if (r._paired || pairedNeg.has(r)) return;
+    const type = r.amt < 0 ? 'income' : 'expense';
+    const name = r.foreign ? `${r.name} (${r.foreign.cur} ${r.foreign.amt.toFixed(2)})` : (r.amt < 0 ? r.name + ' (취소)' : r.name);
+    plan.adds.push({ date: r.date, type, amount: Math.abs(r.amt), name, catId: autoGuessCatId(r.name, type) });
+  });
+
+  // 4) 명세서 기간 안에 있는데 명세서에는 없는 가계부 거래 (참고)
+  plan.extras = pool.filter(p => !p.used && p.t.amount > 0 && p.t.date >= parsed.start && p.t.date <= parsed.end).map(p => p.t);
+  return plan;
+}
+
+function handleStatementFile(input) {
+  const file = input.files && input.files[0]; if (!file) return;
+  const box = document.getElementById('l-stmt-result');
+  const r = new FileReader();
+  r.onload = e => {
+    const parsed = stmtParseHyundai(String(e.target.result || ''));
+    if (!parsed) { box.innerHTML = `<div style="color:var(--neg);font-size:12px;">명세서 형식을 인식하지 못했어요. 현대카드 "이용대금명세서" 엑셀(.xls) 파일인지 확인해주세요.</div>`; _stmt = null; return; }
+    const accId = document.getElementById('l-stmt-acct')?.value;
+    if (!accId) { box.innerHTML = `<div style="color:var(--neg);font-size:12px;">먼저 대상 카드 계좌를 선택하세요.</div>`; return; }
+    _stmt = stmtReconcile(parsed, accId);
+    renderStatementPlan();
+  };
+  r.onerror = () => { box.innerHTML = `<div style="color:var(--neg);font-size:12px;">파일을 읽지 못했어요.</div>`; };
+  r.readAsText(file, 'UTF-8');
+  input.value = '';
+}
+
+function renderStatementPlan() {
+  const box = document.getElementById('l-stmt-result'); if (!box || !_stmt) return;
+  const ld = ledger(), p = _stmt, ps = p.parsed;
+  const acc = ld.accounts.find(a => a.id === p.accId);
+  const won = n => (n < 0 ? '−' : '') + Math.abs(Math.round(n)).toLocaleString() + '원';
+  const catOpts = (type, sel) => ld.categories.filter(c => c.type === type).map(c => `<option value="${c.id}" ${c.id === sel ? 'selected' : ''}>${c.name}</option>`).join('');
+  const fillSum = p.fills.reduce((s, f) => s + f.krw, 0);
+  const addNet = p.adds.reduce((s, a) => s + (a.type === 'income' ? -a.amount : a.amount), 0);
+  const startDay = parseInt(ps.start.slice(8), 10);
+  const periodDiff = acc && cardBillStartDay(acc) !== startDay;
+  const nothing = !p.fills.length && !p.adds.length;
+  const sec = (title, sub, body) => `<div style="margin:12px 0 4px;font-size:13px;font-weight:600;">${title} <span style="font-weight:400;font-size:11px;color:var(--text3);">${sub}</span></div>${body}`;
+  const tbl = (head, rows) => `<div style="overflow-x:auto;"><table style="width:100%;min-width:520px;font-size:12px;"><thead><tr>${head.map(h => `<th${h[1] ? ' class="r"' : ''}>${h[0]}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
+
+  box.innerHTML = `
+    <div style="padding:10px 12px;background:var(--surface2);border-radius:var(--radius);font-size:12px;line-height:1.7;">
+      <b>${acc ? acc.name : ''}</b> · 이용기간 <b>${ps.start} ~ ${ps.end}</b> · 명세서 ${ps.rows.length}건<br>
+      명세서 이용금액 합 <b>${won(ps.total)}</b>${ps.discount != null ? ` · 청구할인 <b>${won(ps.discount)}</b>` : ''}${ps.bill != null ? ` · 청구액 <b>${won(ps.bill)}</b>` : ''}<br>
+      가계부와 짝이 맞은 거래 <b>${p.matched}건</b> · 채울 해외결제 <b>${p.fills.length}건</b>(${won(fillSum)}) · 추가할 거래 <b>${p.adds.length}건</b>(순 ${won(addNet)})${p.skips.length ? ` · 취소 쌍 건너뜀 ${p.skips.length}쌍` : ''}
+    </div>
+    ${nothing ? `<div class="empty" style="padding:14px 0;">가계부와 명세서가 이미 맞아요 🎉 (더 채우거나 추가할 항목이 없어요)</div>` : ''}
+    ${p.fills.length ? sec('해외결제 원화 금액 채우기', '알림에서 외화로만 들어와 0원이던 거래에 명세서의 원화 청구 금액을 넣어요',
+      tbl([['', 0], ['가계부 거래', 0], ['명세서 근거', 0], ['원화', 1]], p.fills.map((f, i) => `<tr>
+        <td><input type="checkbox" id="stmt-fill-${i}" checked style="width:15px;height:15px;"></td>
+        <td>${f.oldMemo}</td><td style="color:var(--text2);font-size:11px;">${f.row.name} · ${f.note}</td>
+        <td class="r" style="font-family:var(--mono);">${won(f.krw)}</td></tr>`).join(''))) : ''}
+    ${p.adds.length ? sec('가계부에 없는 거래 추가', '알림이 누락됐거나 알림이 오지 않는 거래(하이패스 통행료 등)예요. 카테고리는 바꿀 수 있어요',
+      tbl([['', 0], ['날짜', 0], ['가맹점', 0], ['카테고리', 0], ['금액', 1]], p.adds.map((a, i) => `<tr>
+        <td><input type="checkbox" id="stmt-add-${i}" checked style="width:15px;height:15px;"></td>
+        <td style="font-family:var(--mono);white-space:nowrap;">${a.date}</td><td>${a.name}</td>
+        <td><select id="stmt-cat-${i}" style="font-size:11px;padding:2px 4px;">${catOpts(a.type, a.catId)}</select></td>
+        <td class="r" style="font-family:var(--mono);color:${a.type === 'income' ? 'var(--pos)' : 'inherit'};">${a.type === 'income' ? '+' : ''}${won(a.amount)}</td></tr>`).join(''))) : ''}
+    ${p.skips.length ? `<div style="margin-top:10px;font-size:11px;color:var(--text3);">취소 쌍(결제와 취소가 모두 가계부에 없어 서로 상쇄 — 건너뜀): ${p.skips.map(s => `${s.pos.name} ${won(s.pos.amt)}`).join(', ')}</div>` : ''}
+    ${p.extras.length ? `<details style="margin-top:10px;"><summary style="font-size:11px;color:var(--text3);cursor:pointer;">가계부에만 있고 명세서에 없는 거래 ${p.extras.length}건 (참고 — 다음 달 명세서에 나오거나 다른 카드/개인용도일 수 있어요)</summary>
+      <div style="font-size:11px;color:var(--text2);margin-top:4px;">${p.extras.slice(0, 40).map(t => `${t.date} ${t.memo || '-'} ${won(t.amount)}`).join('<br>')}</div></details>` : ''}
+    ${periodDiff ? `<label style="display:flex;align-items:center;gap:6px;margin-top:12px;font-size:12px;"><input type="checkbox" id="stmt-setperiod" checked style="width:15px;height:15px;"> 이 카드의 이용기간 시작일을 <b>${startDay}일</b>로 저장 (지금 ${cardBillStartDay(acc) || '미설정'}) — 카드 청구 대조가 이 기간으로 계산돼요</label>` : ''}
+    <div style="margin-top:12px;display:flex;gap:8px;">
+      ${nothing && !periodDiff ? '' : `<button class="btn btn-primary" onclick="applyStatementPlan()">선택 항목 반영</button>`}
+      <button class="btn" onclick="_stmt=null;document.getElementById('l-stmt-result').innerHTML=''">닫기</button>
+    </div>`;
+}
+
+function applyStatementPlan() {
+  const p = _stmt; if (!p) return;
+  const ld = ledger();
+  let filled = 0, added = 0;
+  p.fills.forEach((f, i) => {
+    if (!document.getElementById('stmt-fill-' + i)?.checked) return;
+    const t = ld.txns.find(x => x.id === f.id); if (!t) return;
+    t.amount = f.krw; t.memo = f.newMemo; delete t.needsReview; filled++;
+  });
+  const stamp = Date.now();
+  p.adds.forEach((a, i) => {
+    if (!document.getElementById('stmt-add-' + i)?.checked) return;
+    const catId = document.getElementById('stmt-cat-' + i)?.value || a.catId || null;
+    ld.txns.push({ id: 'lt_stmt_' + stamp + '_' + i, date: a.date, type: a.type, catId, acctId: p.accId, toAcctId: null,
+      amount: a.amount, memo: a.name, imported: true, fromStatement: true });
+    added++;
+  });
+  if (document.getElementById('stmt-setperiod')?.checked) {
+    const acc = ld.accounts.find(a => a.id === p.accId); if (acc) acc.billStartDay = parseInt(p.parsed.start.slice(8), 10);
+  }
+  try { recalcAllBalances(); } catch (e) {}
+  save();
+  _stmt = null;
+  const box = document.getElementById('l-stmt-result');
+  if (box) box.innerHTML = `<div style="padding:12px;background:var(--pos-bg);border-radius:var(--radius);font-size:13px;">✓ 해외결제 <b>${filled}건</b>의 원화 금액을 채우고, 거래 <b>${added}건</b>을 추가했어요. 요약 탭의 "카드 청구 대조"에서 차액(혜택)을 확인해보세요.</div>`;
+  try { renderLedgerTxnList(); renderBillCheckCard(); renderReviewNeeded(); renderLedgerAccounts(); } catch (e) {}
+}
+
 function populateLedgerImportAcct() {
   const sel = document.getElementById('l-csv-acct'); if(!sel) return;
   sel.innerHTML = `<option value="">— 계좌 선택 —</option>` +
@@ -8356,7 +8604,7 @@ function autoGuessCatId(memo, type) {
     {keys:['스타벅스','starbucks','투썸','이디야','메가커피','컴포즈','빽다방','폴바셋','할리스'], cat:'식비'},
     {keys:['배달의민족','배민','요기요','쿠팡이츠'], cat:'식비'},
     {keys:['네이버페이','naverpa'], cat:'쇼핑'},
-    {keys:['지하철','버스','택시','카카오T','주유','하이패스','교통'], cat:'교통'},
+    {keys:['지하철','버스','택시','카카오T','주유','하이패스','교통','고속도로','도로공사','통행료','철도','코레일','ktx'], cat:'교통'},
     {keys:['관리비','전기','가스','수도','인터넷','통신','핸드폰','월세','임대'], cat:'주거/관리비'},
     {keys:['병원','약국','의원','치과','한의원','건강'], cat:'의료/건강'},
     {keys:['쇼핑','무신사','올리브영','다이소','이케아','코스트코'], cat:'쇼핑'},
