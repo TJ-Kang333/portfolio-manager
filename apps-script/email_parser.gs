@@ -97,17 +97,20 @@ function getTxnSheet() {
 // ── MacroDroid HTTP 직접 수신 (Code.gs 의 doPost 에서 호출) ──
 //   문자/알림 원문 1건을 받아 즉시 파싱 → '가계부거래' 시트에 적재.
 //   Gmail 을 안 거치므로 5분 트리거보다 빠름.
-function ingestAlertText(rawText, sourceHint) {
+//   when(선택): 알림이 실제로 온 시각 — 미인식알림을 나중에 다시 처리할 때(reprocessUnparsedAlerts) 날짜·시각을 원래대로 맞춘다.
+//   noStash(선택): true 면 못 읽어도 미인식알림 시트에 다시 쌓지 않음(재처리 중 중복 방지).
+function ingestAlertText(rawText, sourceHint, when, noStash) {
   const text = String(rawText || '').replace(/\r/g, '').trim();
   if (!text) return { ok: false, error: '빈 내용' };
 
-  const rec = parseAlert(text, new Date(), sourceHint);
+  const at = when instanceof Date && !isNaN(when) ? when : new Date();
+  const rec = parseAlert(text, at, sourceHint);
   if (rec && rec.skip) return { ok: true, skipped: true };
-  if (!rec) { stashUnparsed(text, sourceHint); return { ok: true, unparsed: true }; }
+  if (!rec) { if (!noStash) stashUnparsed(text, sourceHint); return { ok: true, unparsed: true }; }
 
   const lock = LockService.getScriptLock();
   const locked = lock.tryLock(15000); // 못 잡아도 진행 — 중복은 해시로 거른다
-  const ts = new Date().toISOString();
+  const ts = at.toISOString();
   try {
     const sheet  = getTxnSheet();
     const hashes = getExistingHashes(sheet);
@@ -141,6 +144,44 @@ function stashUnparsed(text, sourceHint) {
     if (!sh) { sh = ss.insertSheet('미인식알림'); sh.appendRow(['시각', '출처힌트', '원문']); }
     sh.appendRow([new Date(), String(sourceHint || ''), text.slice(0, 1500)]);
   } catch (e) {}
+}
+
+// ── 미인식알림 재처리 (편집기에서 직접 실행) ──────────────────
+//  파서가 없던 시절에 와서 '미인식알림' 시트에 쌓인 알림(예: 해외승인)을 지금의 파서로 다시 읽어 '가계부거래' 시트에 넣는다.
+//  · reprocessUnparsedAlerts  — 실제로 반영. 줄마다 D열에 결과("재처리: 반영/중복/무시")를 적어 같은 줄을 두 번 처리하지 않음.
+//  · previewReprocessUnparsedAlerts — 시트는 건드리지 않고 로그에만 "이렇게 읽힌다"를 보여줌(먼저 이걸로 확인).
+//  여전히 못 읽는 줄(명세서 안내 등)은 그대로 둔다. 원래 온 시각을 그대로 써서 날짜가 맞게 들어간다.
+function previewReprocessUnparsedAlerts() { _reprocessUnparsed(true); }
+function reprocessUnparsedAlerts()        { _reprocessUnparsed(false); }
+function _reprocessUnparsed(dryRun) {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('미인식알림');
+  if (!sh || sh.getLastRow() < 2) { Logger.log('미인식알림 시트에 처리할 줄이 없습니다.'); return; }
+  const rows = sh.getRange(2, 1, sh.getLastRow() - 1, 4).getValues(); // 시각, 출처힌트, 원문, 처리결과
+  const count = { added: 0, duplicate: 0, skipped: 0, still: 0, done: 0 };
+  rows.forEach((r, i) => {
+    if (String(r[3] || '').trim()) { count.done++; return; }
+    const text = String(r[2] || '').trim();
+    if (!text) return;
+    const when = r[0] instanceof Date ? r[0] : new Date(r[0]);
+    const hint = String(r[1] || '');
+    if (dryRun) {
+      const rec = parseAlert(text, when, hint);
+      if (!rec) { count.still++; Logger.log('[못 읽음] ' + text.replace(/\s+/g, ' ').slice(0, 60)); return; }
+      if (rec.skip) { count.skipped++; return; }
+      count.added++;
+      Logger.log('[읽힘] ' + rec.date + ' ' + rec.type + ' ' + rec.amount + '원 ' + rec.merchant + ' (' + rec.source + ')');
+      return;
+    }
+    const res = ingestAlertText(text, hint, when, true);
+    let mark = '';
+    if (res.added) { mark = '재처리: 반영'; count.added++; }
+    else if (res.duplicate) { mark = '재처리: 중복'; count.duplicate++; }
+    else if (res.skipped) { mark = '재처리: 무시'; count.skipped++; }
+    else count.still++;
+    if (mark) sh.getRange(i + 2, 4).setValue(mark);
+  });
+  Logger.log((dryRun ? '[미리보기] ' : '[실행] ') + '반영 ' + count.added + ' / 중복 ' + count.duplicate + ' / 무시(광고 등) ' + count.skipped +
+             ' / 여전히 못 읽음 ' + count.still + ' / 이미 처리됨 ' + count.done);
 }
 
 function getExistingHashes(sheet) {
@@ -284,7 +325,11 @@ const ALERT_PARSERS = [
       // 원화("원")가 아니라 외화로 와서 금액을 뽑을 수 없다. 아직 원화 환산 전이니
       // amount=0 + forceAccept(아래 parseAlert 의 amount>0 게이트 우회)로 일단 기록해두고,
       // 가맹점명에 외화 통화·금액을 남겨서 사용자가 가계부에서 "수정"으로 원화를 직접 입력하게 한다.
-      const fxM = t.match(/([A-Z]{3})\s+([\d,.]+)\s*[·,]?\s*해외\s*(승인|취소)/);
+      // 실제 알림 원문은 "…해외승인 EUR 4.00 9/15 4:18" 처럼 통화·금액이 승인 뒤에 오고, 앱 알림 목록 화면은
+      // "GBP 11.45 · 해외승인" 처럼 앞에 온다 — 두 순서를 다 읽는다. (앞쪽 형태만 보던 때는 실제 해외승인이 전부 미인식이었음)
+      const fxA = t.match(/([A-Z]{3})\s+([\d,]+(?:\.\d+)?)\s*[·,]?\s*해외\s*(승인|취소)/);
+      const fxB = fxA ? null : t.match(/해외\s*(승인|취소)\s*([A-Z]{3})\s+([\d,]+(?:\.\d+)?)/);
+      const fxM = fxA || (fxB && [fxB[0], fxB[2], fxB[3], fxB[1]]);
       if (fxM) {
         const isFxCancel = fxM[3] === '취소';
         const dm2 = t.match(/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
@@ -628,6 +673,21 @@ function _testParser() {
       'GBP 11.45 · 해외승인',
       '강태준 님, 현대 대한항공120 해외승인 9/18 23:01',
     ].join('\n'),
+    // 실제 알림 원문 (미인식알림 시트, 2026-09-17): 통화·금액이 "해외승인" 뒤에 오고, 같은 줄이 두 번 겹쳐 옴
+    현대카드_해외_실제원문: [
+      '현대카드',
+      '강태준 님, 현대 대한항공120 해외승인 GBP 535.98 9/17 5:06 ',
+      '강태준 님, 현대 대한항공120 해외승인 GBP 535.98 9/17 5:06 ',
+      'HERTZUK',
+    ].join('\n'),
+    현대카드_해외_실제원문_EUR: [
+      '현대카드',
+      '강태준 님, 현대 대한항공120 해외승인 EUR 4.00 9/15 4:18 ',
+      '강태준 님, 현대 대한항공120 해외승인 EUR 4.00 9/15 4:18 ',
+      'MS*MARITIMFRANKFURT',
+    ].join('\n'),
+    // 금액 없는 안내성 알림은 거래로 잡히면 안 됨(미인식으로 남음)
+    현대카드_해외사용확인알림: '현대카드\n[사고예방] 해외사용 확인 알림\n[사고예방] 해외사용 확인 알림',
     // ── 삼성카드 문자 ──
     // 실제 문자 원문 (2026-10-19 확인): 4줄 구성, [Web발신] 머리말 없음
     삼성카드_승인_실제: [
@@ -658,6 +718,7 @@ function _testParser() {
                   현대카드_앱알림_의원상호: 'hyundai', 현대카드_앱알림_풀무원: 'hyundai',
                   지역화폐_광고: 'gyeonggi', 현대카드_자동납부_관리비: 'hyundai',
                   현대카드_대한항공120_국내: 'hyundai', 현대카드_대한항공120_해외: 'hyundai',
+                  현대카드_해외_실제원문: 'hyundai', 현대카드_해외_실제원문_EUR: 'hyundai', 현대카드_해외사용확인알림: 'hyundai',
                   삼성카드_승인_실제: 'samsung', 삼성카드_알림_겹침: 'samsung', 삼성카드_승인_한줄: 'samsung', 삼성카드_승인_여러줄: 'samsung', 삼성카드_취소: 'samsung',
                   삼성카드_해외: 'samsung', 삼성카드_광고: 'samsung', 현대카드_삼성전자가맹점: 'hyundai' };
   Object.keys(cases).forEach(k => {
