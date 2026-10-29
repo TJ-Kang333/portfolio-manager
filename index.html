@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-16 삼성카드문자</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-29 현대카드이용기간14일</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -5740,8 +5740,9 @@ function offerLinkSettleOut(total) {
 // 알림 누락 같은 것도 같은 차액으로 드러나므로 자동 기록하지 않고 확인 후 기록한다.
 function cardBillStartDay(a) {
   if (a.billStartDay) return a.billStartDay;
-  // 현대카드: 결제일 25일 전후 / 이용기간 전월 16일~당월 15일 (실제 결제내역과 대조해 확인)
-  return /현대카드/.test(a.name || '') ? 16 : 0;
+  // 현대카드: 이용기간 전월 14일~당월 13일 (결제일 26일 전후). 실제 이용대금명세서로 확인:
+  // 2026년 9월 명세서 = 8/14~9/13, 10월 명세서 = 9/14~10/13 (이전에 16일로 잘못 추정했던 걸 정정)
+  return /현대카드/.test(a.name || '') ? 14 : 0;
 }
 function setCardBillStart(i) {
   const a = ledger().accounts[i]; if (!a) return;
