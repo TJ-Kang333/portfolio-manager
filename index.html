@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-29 명세서대조</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-29 개인용도즉시전환</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -1487,6 +1487,7 @@ async function checkFreshness() {
     // await 사이 편집이 시작됐을 수 있으니 여기서 다시 확인 — adoptServerState 가 그 시점 기준으로 처리
     adoptServerState(d.state);
     if (d.rev != null) setBaseRev(d.rev);
+    migratePersonalTxns();
     migrateIncentiveAmounts();
     migrateBrokenTransferTargets();
     migrateSettleCats();
@@ -6526,6 +6527,7 @@ function reviewCatPick(txnId, catId) {
   const t = ld.txns.find(x => x.id === txnId);
   if (!t || !catId) return;
   t.catId = catId;
+  migratePersonalTxns();   // "개인 용도" 카테고리를 고르면 유형도 개인용도로 전환
   save();
   const row = document.getElementById(`lrow-${txnId}`);
   const cell = row && row.children[3];
@@ -6550,6 +6552,7 @@ function resolveReview(txnId) {
     const payKey = AMBIGUOUS_PAY.find(k => String(t.memo||'').includes(k));
     if (payKey) { ld.payDefaultCat = ld.payDefaultCat || {}; ld.payDefaultCat[payKey] = newCat; }
   }
+  migratePersonalTxns();
   save();
   renderReviewNeeded();
   renderLedgerTxnList();
@@ -7095,6 +7098,7 @@ function saveEditedTxn(id) {
     applyPfDeposit(newDate.slice(0,7), null, t.amount);
   }
 
+  migratePersonalTxns();   // 카테고리를 "개인 용도"로 바꿨다면 유형도 바로 개인용도로 전환 (정산 카드에 바로 뜨도록)
   save();
   document.getElementById('_editTxnOverlay')?.remove();
   populateLedgerTxnForm();   // 월 셀렉트 갱신 포함
