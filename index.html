@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-29 개인용도즉시전환</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-10-31 정산카드접기</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -603,18 +603,20 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
     </div>
     <!-- 개인용도 정산 (공금 카드로 쓴 개인 지출 — 실제 지출 집계엔 안 잡히고, 내 계좌에서 채워 넣어야 할 금액) -->
     <div class="card" id="l-personal-card" style="margin-bottom:14px;display:none;">
-      <div class="card-head">
-        <span class="card-title">💳 개인용도 정산</span>
+      <div class="card-head" style="cursor:pointer;" onclick="toggleSettleCard('personal')">
+        <span class="card-title">💳 개인용도 정산 <span id="l-personal-sum" style="font-size:12px;font-weight:500;color:var(--text2);"></span></span>
         <span style="font-size:11px;color:var(--text3);">공금 카드로 쓴 개인 지출 — 내 계좌에서 채워 넣어야 할 금액</span>
+        <span id="l-personal-arrow" style="font-size:12px;color:var(--text2);margin-left:auto;">▼ 접기</span>
       </div>
       <div id="l-personal-body"></div>
     </div>
 
     <!-- 정산 받을 돈 (경기지역화폐 등 "정산대상" 계좌 — 내 돈으로 충전/결제하고 공금에서 돌려받아야 할 금액) -->
     <div class="card" id="l-reimburse-card" style="margin-bottom:14px;display:none;">
-      <div class="card-head">
-        <span class="card-title">💰 정산 받을 돈</span>
+      <div class="card-head" style="cursor:pointer;" onclick="toggleSettleCard('reimburse')">
+        <span class="card-title">💰 정산 받을 돈 <span id="l-reimburse-sum" style="font-size:12px;font-weight:500;color:var(--text2);"></span></span>
         <span style="font-size:11px;color:var(--text3);">내 돈으로 충전한 계좌(경기지역화폐 등) 사용액 — 공금에서 돌려받아야 함</span>
+        <span id="l-reimburse-arrow" style="font-size:12px;color:var(--text2);margin-left:auto;">▼ 접기</span>
       </div>
       <div id="l-reimburse-body"></div>
     </div>
@@ -5371,6 +5373,24 @@ function settleSelectedPersonal() {
   if (!cand) alert('같은 금액의 입금 거래를 못 찾았어요.\n입금이 가계부에 들어온 뒤, 그 거래의 "수정"에서 "개인용도 정산 입금"을 체크해주세요.');
 }
 
+// 개인용도 정산 / 정산 받을 돈 카드 접기·펴기 (항목이 많아지면 아래 내용을 보기 힘들어서). 기기별로 기억.
+function _settleCollapsed(key) {
+  try { return localStorage.getItem('pf_settle_collapsed_' + key) === '1'; } catch (e) { return false; }
+}
+function applySettleCollapse(key, summary) {
+  const body = document.getElementById('l-' + key + '-body');
+  const arrow = document.getElementById('l-' + key + '-arrow');
+  const sum = document.getElementById('l-' + key + '-sum');
+  const c = _settleCollapsed(key);
+  if (body) body.style.display = c ? 'none' : '';
+  if (arrow) arrow.textContent = c ? '▶ 펼치기' : '▼ 접기';
+  if (sum && summary != null) sum.textContent = c ? summary : '';
+}
+function toggleSettleCard(key) {
+  try { localStorage.setItem('pf_settle_collapsed_' + key, _settleCollapsed(key) ? '0' : '1'); } catch (e) {}
+  if (key === 'personal') renderPersonalSettlement(); else renderReimburseCard();
+}
+
 function renderPersonalSettlement() {
   const card = document.getElementById('l-personal-card');
   const body = document.getElementById('l-personal-body');
@@ -5386,6 +5406,7 @@ function renderPersonalSettlement() {
   const acctName = id => ld.accounts.find(a => a.id === id)?.name || '-';
   const unsettledIds = new Set(unsettled.map(t => t.id));
   [..._persSel].forEach(id => { if (!unsettledIds.has(id)) _persSel.delete(id); });
+  applySettleCollapse('personal', `· 미정산 ${unsettled.length}건 · ${total.toLocaleString()}원`);
 
   body.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
@@ -5614,8 +5635,10 @@ function renderReimburseCard() {
   const grandTotal = ld.txns
     .filter(t => t.type === 'expense' && !t.reimbursed && idSet.has(t.acctId))
     .reduce((s, t) => s + reimburseDefaultAmt(t), 0);
+  const pendingCnt = ld.txns.filter(t => t.type === 'expense' && !t.reimbursed && idSet.has(t.acctId)).length;
+  applySettleCollapse('reimburse', `· 미정산 ${pendingCnt}건 · ${grandTotal.toLocaleString()}원`);
 
-  const renderRow = (t, isSettled) => isSettled ? `<tr style="opacity:.6;">
+  const renderRow =(t, isSettled) => isSettled ? `<tr style="opacity:.6;">
       <td style="font-family:var(--mono);font-size:11px;white-space:nowrap;">${t.date}</td>
       <td style="font-size:12px;">${t.memo || '-'}</td>
       <td class="r" style="font-family:var(--mono);font-size:12px;">${(t.reimbursedAmount!=null?t.reimbursedAmount:reimburseDefaultAmt(t)).toLocaleString()}원</td>
