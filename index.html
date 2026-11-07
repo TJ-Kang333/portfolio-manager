@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 비중고정</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 혼합최소계산</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -4311,7 +4311,6 @@ const REB_DEFAULTS = {
   trigMonths: 0,      // 마지막 리밸런싱 후 N개월. 0 = 끔
   refGroup: '',       // 자산 비율을 따라갈 그룹 id (IRP 처럼 종목은 다르지만 비율은 같게)
   riskCap: 0,         // 위험자산 한도 (%). 0 = 끔
-  locked: [],         // 자동 계산 때 비중을 고정할 종목명들
 };
 
 function _rbH(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -4673,22 +4672,12 @@ function rebAutoFit() {
   let cands = m.view.filter(r => r.hasTarget);
   if (!cands.length) cands = m.view.slice();
   if (!cands.length) { alert('먼저 이 그룹에서 쓸 종목을 「+ 목표 종목 추가」로 넣으세요 (비중은 0이어도 돼요).'); return; }
-  const lockedSet = new Set(m.st.locked || []);
-  const fixed = cands.filter(r => lockedSet.has(r.name));
-  const free = cands.filter(r => !lockedSet.has(r.name));
-  if (!free.length) { alert('모든 종목이 🔒 고정돼 있어요. 계산할 종목의 고정을 풀어 주세요.'); return; }
+  const free = cands;
   const name = id => S.assets.find(a => a.id === id)?.name || '미분류';
   const T = m.ref.T;
 
-  // 고정한 종목 몫을 빼고 남은 목표를 나머지 종목으로 맞춘다
-  const fixedSum = fixed.reduce((s, r) => s + r.target, 0);
-  if (fixedSum > 100.05) { alert(`🔒 고정한 종목 비중 합계가 ${fixedSum.toFixed(1)}%로 100%를 넘어요.`); return; }
-  const rem = {}; Object.entries(T).forEach(([a, v]) => { rem[a] = v; });
-  fixed.forEach(r => Object.entries(r.mix).forEach(([a, p]) => { rem[a] = (rem[a] || 0) - r.target * p / 100; }));
-  const freeSum = 100 - fixedSum;
-  const cap = m.st.riskCap;
-  const fixedRisk = fixed.reduce((s, r) => s + r.target * r.risk, 0);
-  const capFree = cap > 0 ? cap - fixedRisk : 0;
+  const rem = T, freeSum = 100;
+  const cap = m.st.riskCap, capFree = cap;
 
   const assetIds = [...new Set([...Object.keys(T), ...cands.flatMap(r => Object.keys(r.mix))])];
   const W = 1000;
@@ -4702,17 +4691,25 @@ function rebAutoFit() {
     A.push(free.map(r => W * r.risk)); b.push(W * Math.max(0, capFree));
     w = _nnls(A, b);
   }
-  // 2단계: 같은 자산 비율을 만드는 조합이 여러 개면(예: 국내주식 ETF + 채권 ETF ↔ 주식·채권 혼합형)
-  //        그 비율은 그대로 두고 ① 위험자산이 적은 쪽 ② 같으면 혼합 종목을 쓰는 쪽을 고른다
+  // 2단계: 같은 자산 비율을 만드는 조합이 여러 개면(예: 국내주식 ETF + 채권 ETF ↔ 주식·채권 혼합 ETF)
+  //   혼합 ETF 는 위험자산 한도를 맞추려고 쓰는 것 → 한도를 지키는 데 **필요한 만큼만** 쓰고 나머지는 일반 ETF 로.
+  //   ① 혼합 없이 같은 비율을 만들 수 있고 한도 안이면 혼합 0
+  //   ② 한도를 넘으면 위험자산 = 한도 로 두고 혼합 비중이 가장 작은 조합
   {
-    const A2 = [], b2 = [];
-    assetIds.forEach(a => {
-      const row = free.map(r => (r.mix[a] || 0) / 100);
-      A2.push(row.map(v => W * v)); b2.push(W * row.reduce((s, v, k) => s + v * w[k], 0));
-    });
-    A2.push(free.map(() => W)); b2.push(W * freeSum);
-    A2.push(free.map(r => r.risk + (r.isMix ? 0 : 0.05))); b2.push(0);
-    w = _nnls(A2, b2);
+    const solve2 = withCap => {
+      const A2 = [], b2 = [];
+      assetIds.forEach(a => {
+        const row = free.map(r => (r.mix[a] || 0) / 100);
+        A2.push(row.map(v => W * v)); b2.push(W * row.reduce((s, v, k) => s + v * w[k], 0));
+      });
+      A2.push(free.map(() => W)); b2.push(W * freeSum);
+      if (withCap) { A2.push(free.map(r => W * r.risk)); b2.push(W * Math.max(0, capFree)); }
+      A2.push(free.map(r => (r.isMix ? 1 : 0))); b2.push(0); // 혼합 ETF 는 적게
+      return _nnls(A2, b2);
+    };
+    let w2 = solve2(false);
+    if (cap > 0 && riskOfFree(w2) > capFree + 0.05) w2 = solve2(true);
+    w = w2;
   }
   let ws = w.map(x => Math.round(x * 10) / 10);
   const sum = ws.reduce((s, x) => s + x, 0);
@@ -4729,35 +4726,27 @@ function rebAutoFit() {
   }
 
   const got = {};
-  fixed.forEach(r => Object.entries(r.mix).forEach(([a, p]) => { got[a] = (got[a] || 0) + r.target * p / 100; }));
   free.forEach((r, k) => Object.entries(r.mix).forEach(([a, p]) => { got[a] = (got[a] || 0) + ws[k] * p / 100; }));
   const miss = assetIds.filter(a => Math.abs((got[a] || 0) - (T[a] || 0)) >= 0.5);
-  const totalRisk = fixedRisk + riskOfFree(ws);
-  const lines = cands.map(r => {
-    if (lockedSet.has(r.name)) return `• ${r.name}: ${r.target}% (🔒 고정)`;
-    return `• ${r.name}: ${r.target}% → ${ws[free.indexOf(r)]}%`;
-  }).join('\n');
+  const totalRisk = riskOfFree(ws);
+  const lines = cands.map((r, k) => `• ${r.name}: ${r.target}% → ${ws[k]}%`).join('\n');
   let msg = `「${m.ref.name}」의 자산 비율에 맞춰 이 그룹 목표 비중을 바꿀까요?\n\n${lines}`;
   if (cap > 0) msg += `\n\n위험자산 ${totalRisk.toFixed(1)}% / 한도 ${cap}%`;
+  if (cap > 0 && totalRisk > cap + 0.05) {
+    const notSafe = cands.filter(r => r.isMix && r.risk > 0).map(r => r.name);
+    msg += notSafe.length
+      ? `\n⚠ 한도를 못 맞췄어요. 혼합 ETF(${notSafe.join(', ')})가 「안전자산」으로 지정돼 있지 않아 위험자산을 줄이는 데 도움이 안 돼요. 종목명 아래에서 「안전자산」으로 지정해 주세요.`
+      : `\n⚠ 한도를 못 맞췄어요. 안전자산으로 인정되는 혼합 ETF 를 추가해 보세요.`;
+  }
   // 혼합 종목 구성에 기준 그룹에 없는 자산군이 있으면 (예: 「미국채권」 vs 「채권/채권ETF」) 혼합 종목을 쓸 수 없다
   const strange = [...new Set(cands.filter(r => r.isMix).flatMap(r => Object.keys(r.mix)).filter(a => !(T[a] > 0)))];
   if (strange.length) msg += `\n\n⚠ 혼합 종목 구성의 ${strange.map(a => `「${name(a)}」`).join(', ')}이(가) 「${m.ref.name}」 목표에는 없어요.`
     + `\n같은 자산인데 자산군 이름이 다르게 잡혀 있으면(예: 미국채권 vs 채권/채권ETF) 혼합 종목이 쓰이지 않아요. 혼합 구성이나 「${m.ref.name}」 종목의 자산군을 맞춰 주세요.`;
   if (miss.length) msg += `\n\n⚠ 정확히 못 맞추는 자산군:\n` + miss.map(a => `• ${name(a)}: 기준 ${(T[a] || 0).toFixed(1)}% → ${(got[a] || 0).toFixed(1)}%`).join('\n')
-    + `\n(그 자산군을 담은 종목을 추가하거나, 고정 비중·혼합 종목 구성을 확인하세요)`;
+    + `\n(그 자산군을 담은 종목을 추가하거나, 혼합 종목 구성을 확인하세요)`;
   if (!confirm(msg)) return;
   free.forEach((r, k) => { _rebEnsureTarget(r, pf, unitId).target = ws[k]; });
   pf.assetTargets = computeAssetTargetsFromTickers(pf);
-  save(); renderPortfolios();
-}
-
-function rebToggleLock(i) {
-  const [pf, unitId] = _rebPfUnit(); const r = _rebView[i]; if (!pf || !r || !r.name) return;
-  getUnitSettings(pf, unitId);
-  const raw = pf.unitSettings[unitId];
-  const set = new Set(raw.locked || []);
-  if (set.has(r.name)) set.delete(r.name); else { set.add(r.name); _rebEnsureTarget(r, pf, unitId); }
-  raw.locked = [...set];
   save(); renderPortfolios();
 }
 
@@ -4791,7 +4780,7 @@ function _assetPanelHtml(m) {
     </table></div>
     ${m.ref && Math.abs(refSum - 100) > 0.05 ? `<div style="margin-top:6px;font-size:11px;color:#B05A1A;">⚠ 기준 그룹의 목표 합계가 ${refSum.toFixed(1)}%예요.</div>` : ''}
     <div style="margin-top:6px;font-size:11px;color:var(--text3);line-height:1.6;">
-      ${m.ref ? '자동 계산은 이 그룹에 목표 종목으로 넣어 둔 종목들(0%여도 됨) 안에서 비중을 정해요. 🔒로 고정한 종목은 입력한 비중을 그대로 두고 나머지 종목만 맞춰요(예: 혼합 종목 40% 고정 → 국내주식·채권 ETF 만 조정). ' : ''}
+      ${m.ref ? '자동 계산은 이 그룹에 목표 종목으로 넣어 둔 종목들(0%여도 됨) 안에서 비중을 정해요. 혼합 ETF 는 위험자산 한도를 지키는 데 필요한 만큼만 쓰고, 그만큼 겹치는 일반 ETF 를 줄여요.' : ''}
       혼합 종목은 표에서 자산군을 「혼합」으로 바꿔 구성을 넣어요. 위험/안전은 종목명 아래에서 종목마다 지정하고, 지정하지 않은 종목은 「자산군 설정」의 위험자산 체크로 계산해요.
     </div>
   </div>`;
@@ -5029,7 +5018,7 @@ function renderRebUnit(pf, unit, m) {
         <td class="r" style="white-space:nowrap;"><input type="number" inputmode="decimal" min="0" max="100" step="0.1"
           value="${r.hasTarget ? r.target : ''}" placeholder="0"
           oninput="rebSetTarget(${i},this.value)" onchange="save()"
-          style="width:64px;text-align:right;padding:4px 6px;font-size:12px;font-family:var(--mono);${m.ref && (st.locked || []).includes(r.name) ? 'border-color:#6A5ACD;background:#F1EFFC;' : ''}" /><span style="font-size:11px;color:var(--text2);margin-left:2px;">%</span>${m.ref && r.name ? `<button class="btn-sm" style="margin-left:3px;padding:2px 5px;${(st.locked || []).includes(r.name) ? 'border-color:#6A5ACD;' : 'opacity:.55;'}" title="자동 계산 때 이 비중을 그대로 두기" onclick="rebToggleLock(${i})">${(st.locked || []).includes(r.name) ? '🔒' : '🔓'}</button>` : ''}</td>
+          style="width:64px;text-align:right;padding:4px 6px;font-size:12px;font-family:var(--mono);" /><span style="font-size:11px;color:var(--text2);margin-left:2px;">%</span></td>
         <td class="r" id="rb-ta-${i}">${_rbWon(r.tgtAmt)}</td>
         <td class="r" id="rb-dr-${i}">${_driftHtml(r.drift, rFlag, r.target > 0 || r.cur > 0)}</td>
         <td class="r" id="rb-tr-${i}" style="white-space:nowrap;">${_tradeHtml(r)}</td>
