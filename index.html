@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 혼합후보수정</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 기존비중유지</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -4692,20 +4692,29 @@ function rebAutoFit() {
     A.push(free.map(r => W * r.risk)); b.push(W * Math.max(0, capFree));
     w = _nnls(A, b);
   }
-  // 2단계: 같은 자산 비율을 만드는 조합이 여러 개면(예: 국내주식 ETF + 채권 ETF ↔ 주식·채권 혼합 ETF)
-  //   혼합 ETF 는 위험자산 한도를 맞추려고 쓰는 것 → 한도를 지키는 데 **필요한 만큼만** 쓰고 나머지는 일반 ETF 로.
-  //   ① 혼합 없이 같은 비율을 만들 수 있고 한도 안이면 혼합 0
-  //   ② 한도를 넘으면 위험자산 = 한도 로 두고 혼합 비중이 가장 작은 조합
+  // 2단계: 같은 자산 비율을 만드는 조합은 여러 개 → 「원래 사려던 비중」에서 가장 적게 바뀌는 조합을 고른다.
+  //   원래 비중(prior) = 기준 그룹의 자산군 비율을, 그 자산군의 일반 ETF 들에 지금 IRP 목표 비율대로 나눈 것
+  //   (목표가 없으면 보유 금액 비율, 그것도 없으면 똑같이). 혼합 ETF 의 원래 비중은 0.
+  //   → 혼합 ETF 는 위험자산 한도를 맞추는 데 필요한 만큼만 들어가고, 그 구성과 겹치는 ETF 만 줄어든다.
+  //     같은 자산군 ETF 끼리의 비율(예: S&P500 : 나스닥100)도 그대로 유지.
   {
+    const G = {}; // 1단계에서 정한 자산군 비율
+    assetIds.forEach(a => { G[a] = free.reduce((s, r, k) => s + (r.mix[a] || 0) / 100 * w[k], 0); });
+    const prior = free.map(() => 0);
+    const byAsset = {};
+    free.forEach((r, k) => { if (!r.isMix) { const a = Object.keys(r.mix)[0]; (byAsset[a] = byAsset[a] || []).push(k); } });
+    Object.entries(byAsset).forEach(([a, ks]) => {
+      const by = f => ks.reduce((s, k) => s + f(free[k]), 0);
+      const share = by(r => r.target) > 0 ? (r => r.target) : by(r => r.cur) > 0 ? (r => r.cur) : (() => 1);
+      const tot = by(share);
+      ks.forEach(k => { prior[k] = (G[a] || 0) * share(free[k]) / tot; });
+    });
     const solve2 = withCap => {
       const A2 = [], b2 = [];
-      assetIds.forEach(a => {
-        const row = free.map(r => (r.mix[a] || 0) / 100);
-        A2.push(row.map(v => W * v)); b2.push(W * row.reduce((s, v, k) => s + v * w[k], 0));
-      });
+      assetIds.forEach(a => { A2.push(free.map(r => W * (r.mix[a] || 0) / 100)); b2.push(W * (G[a] || 0)); });
       A2.push(free.map(() => W)); b2.push(W * freeSum);
       if (withCap) { A2.push(free.map(r => W * r.risk)); b2.push(W * Math.max(0, capFree)); }
-      A2.push(free.map(r => (r.isMix ? 1 : 0))); b2.push(0); // 혼합 ETF 는 적게
+      free.forEach((r, k) => { A2.push(free.map((_, j) => (j === k ? 1 : 0))); b2.push(prior[k]); });
       return _nnls(A2, b2);
     };
     let w2 = solve2(false);
@@ -4716,8 +4725,9 @@ function rebAutoFit() {
   const sum = ws.reduce((s, x) => s + x, 0);
   if (sum > 0) {
     // 반올림 오차는 가장 큰 종목에 — 한도가 있으면 위험자산 몫이 가장 작은 종목 중에서
-    let bi = -1;
-    ws.forEach((x, k) => {
+    // 반올림 오차는 혼합 ETF 에(쓰였다면) — 다른 ETF 비중은 건드리지 않도록. 없으면 가장 큰 종목(한도가 있으면 안전자산 우선)
+    let bi = ws.findIndex((x, k) => x > 0 && free[k].isMix);
+    if (bi < 0) ws.forEach((x, k) => {
       if (x <= 0) return;
       if (bi < 0) { bi = k; return; }
       const better = cap > 0 ? (free[k].risk < free[bi].risk || (free[k].risk === free[bi].risk && x > ws[bi])) : x > ws[bi];
