@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 그룹만사용</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 혼합종목·IRP</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -449,7 +449,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 
   <div class="card" style="margin-bottom:14px;">
     <table>
-      <thead><tr><th style="width:24px;"></th><th>자산군</th><th>색상</th><th></th></tr></thead>
+      <thead><tr><th style="width:24px;"></th><th>자산군</th><th>색상</th><th title="IRP 등 위험자산 한도 계산에 사용">위험자산</th><th></th></tr></thead>
       <tbody id="asset-table"></tbody>
     </table>
     <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
@@ -4234,6 +4234,7 @@ function renderAssets() {
       <td class="drag-handle" title="드래그로 순서 변경">⠿</td>
       <td><input type="text" id="aname-${i}" value="${a.name}" style="width:200px;" /></td>
       <td><input type="color" id="acol-${i}" value="${a.color}" style="width:40px;height:30px;border:1px solid var(--border);border-radius:6px;padding:2px;cursor:pointer;" /></td>
+      <td style="text-align:center;"><input type="checkbox" ${isRiskyAsset(a) ? 'checked' : ''} onchange="S.assets[${i}].risky=this.checked;save();" title="IRP 등 위험자산 한도 계산에 사용" /></td>
       <td><button class="btn-sm btn-danger" onclick="if(confirm('자산군 ‹${a.name}›을 삭제할까요?\\n관련 포트폴리오 설정에서도 제거됩니다.')){deleteAsset(${i});}">삭제</button></td>
     </tr>
   `).join('');
@@ -4308,6 +4309,8 @@ const REB_DEFAULTS = {
   trigAbs: 5,         // 절대 편차 기준 (%p). 0 = 끔
   trigRel: 25,        // 상대 편차 기준 (목표 대비 %). 0 = 끔
   trigMonths: 0,      // 마지막 리밸런싱 후 N개월. 0 = 끔
+  refGroup: '',       // 자산 비율을 따라갈 그룹 id (IRP 처럼 종목은 다르지만 비율은 같게)
+  riskCap: 0,         // 위험자산 한도 (%). 0 = 끔
 };
 
 function _rbH(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -4406,6 +4409,12 @@ function buildRebModel(pf, unitId) {
       assetId: h.assetId || _guessAssetId(h.name) || '', price: h.price });
   });
 
+  rows.forEach(r => {
+    r.mix = tickerParts(pf, r.name, r.assetId);
+    r.isMix = Object.keys(r.mix).length > 1;
+    r.risk = tickerRiskShare(pf, r.name, r.mix);
+  });
+
   const total = rows.reduce((s, r) => s + r.cur, 0);
   const extra = _rebExtra[pf.id + '|' + unitId] || 0;
   const base = total + extra;
@@ -4448,10 +4457,11 @@ function buildRebModel(pf, unitId) {
   const groups = [];
   const gmap = new Map();
   rows.forEach(r => {
-    const aid = order.includes(r.assetId) ? r.assetId : '__unknown';
+    const aid = r.isMix ? '__mix' : order.includes(r.assetId) ? r.assetId : '__unknown';
     if (!gmap.has(aid)) {
       const a = S.assets.find(x => x.id === aid);
-      const g = { assetId: aid, name: a ? a.name : '미분류', color: a ? a.color : '#A09F9A', rows: [] };
+      const g = aid === '__mix' ? { assetId: aid, name: '혼합 종목', color: '#8B7FD1', rows: [] }
+        : { assetId: aid, name: a ? a.name : '미분류', color: a ? a.color : '#A09F9A', rows: [] };
       gmap.set(aid, g); groups.push(g);
     }
     gmap.get(aid).rows.push(r);
@@ -4473,7 +4483,15 @@ function buildRebModel(pf, unitId) {
   const sell = rows.filter(r => r.trade < 0).reduce((s, r) => s - r.trade, 0);
   const cashLeft = extra - (buy - sell);
 
-  const m = { pf, unitId, st, month, accts, rows, view, groups, total, extra, base, sumT, buy, sell, cashLeft, note };
+  const refG = st.refGroup && st.refGroup !== unitId ? (pf.groups || []).find(g => g.id === st.refGroup) : null;
+  const ref = refG ? { id: refG.id, name: refG.name, T: groupAssetTargets(pf, refG.id) } : null;
+  const assetsLT = lookThroughAssets(rows, total, ref ? ref.T : null);
+  const riskCur = rows.reduce((s, r) => s + r.curPct * r.risk, 0);
+  const riskTgt = rows.reduce((s, r) => s + r.target * r.risk, 0);
+  const hasMix = rows.some(r => r.isMix);
+
+  const m = { pf, unitId, st, month, accts, rows, view, groups, total, extra, base, sumT, buy, sell, cashLeft, note,
+    ref, assetsLT, riskCur, riskTgt, hasMix };
   m.signal = rebSignal(m);
   return m;
 }
@@ -4508,7 +4526,7 @@ function rebSignal(m) {
     }
   };
   if (st.trigLevel === 'asset') {
-    m.groups.forEach(g => { if (g.target > 0 || g.cur > 0) check(g.name, g.curPct, g.target, 'g:' + g.assetId); });
+    m.assetsLT.forEach(e => { if (e.target > 0 || e.cur > 0) check(e.name, e.curPct, e.target, 'g:' + e.assetId); });
   } else {
     m.rows.forEach(r => { if (r.target > 0) check(r.name || '(이름 없음)', r.curPct, r.target, 'r:' + r.name); });
   }
@@ -4516,6 +4534,15 @@ function rebSignal(m) {
   if (orphan.length && st.trigLevel !== 'asset') {
     orphan.forEach(r => flagged.add('r:' + r.name));
     reasons.push({ text: `목표에 없는 보유 종목 ${orphan.length}개 (${orphan.map(r => r.name).slice(0, 3).join(', ')}${orphan.length > 3 ? ' 외' : ''})` });
+  }
+
+  if (m.ref) {
+    const diffs = m.assetsLT.map(e => ({ e, d: e.target - (e.ref || 0) })).filter(x => Math.abs(x.d) >= 0.5);
+    if (diffs.length) reasons.push({ text: `기준 그룹 「${m.ref.name}」과 목표 자산 비율이 달라요: ` + diffs.map(x => `${x.e.name} ${x.d > 0 ? '+' : ''}${x.d.toFixed(1)}%p`).join(', ') });
+  }
+  if (st.riskCap > 0) {
+    if (m.riskTgt > st.riskCap + 0.05) reasons.push({ text: `목표의 위험자산 비중 ${m.riskTgt.toFixed(1)}%가 한도 ${st.riskCap}%를 넘어요` });
+    if (m.riskCur > st.riskCap + 0.05) reasons.push({ text: `현재 위험자산 비중 ${m.riskCur.toFixed(1)}%가 한도 ${st.riskCap}%를 넘어요` });
   }
 
   const raw = m.pf.unitSettings?.[m.unitId] || {};
@@ -4530,6 +4557,262 @@ function rebSignal(m) {
 
   const warn = Math.abs(m.sumT - 100) > 0.05 ? `목표 합계가 ${m.sumT.toFixed(1)}%예요 (100%가 되어야 정확해요)` : '';
   return { state: reasons.length ? 'need' : 'ok', reasons, flagged, warn };
+}
+
+// ── 혼합 종목 · 자산 비율 기준 그룹 · 위험자산 한도 ─────────
+// pf.tickerMix[종목명] = { parts: {자산군id: %}, safe: bool }  — 한 종목이 여러 자산군에 걸친 경우(예: 주식·채권 혼합형).
+//   safe = 위험자산 한도 계산 때 종목 전체를 안전자산으로 인정(IRP 의 채권혼합형 등).
+// 그룹 설정 refGroup = 자산 비율을 따라갈 그룹, riskCap = 위험자산 한도(%).
+function isRiskyAsset(a) {
+  if (!a) return false;
+  if (a.risky !== undefined) return !!a.risky;
+  return !/(채권|현금|예금|적금|MMF|RP|국채)/i.test(a.name || '');
+}
+function isRiskyAssetId(id) { return isRiskyAsset(S.assets.find(a => a.id === id)); }
+
+function tickerParts(pf, name, assetId) {
+  const mix = pf && pf.tickerMix && name ? pf.tickerMix[name] : null;
+  if (mix && mix.parts) {
+    const ents = Object.entries(mix.parts).filter(([, v]) => (parseFloat(v) || 0) > 0);
+    const sum = ents.reduce((s, [, v]) => s + parseFloat(v), 0);
+    if (ents.length > 1 && sum > 0) {
+      const o = {}; ents.forEach(([k, v]) => { o[k] = parseFloat(v) / sum * 100; }); return o;
+    }
+  }
+  return { [assetId || '__unknown']: 100 };
+}
+// 종목 1원 중 위험자산으로 잡히는 몫 (0~1)
+function tickerRiskShare(pf, name, parts) {
+  const mix = pf && pf.tickerMix && name ? pf.tickerMix[name] : null;
+  if (mix && mix.safe && Object.keys(parts).length > 1) return 0;
+  return Object.entries(parts).reduce((s, [a, p]) => s + (isRiskyAssetId(a) ? p / 100 : 0), 0);
+}
+
+// 그룹의 목표를 자산군 비율로 (혼합 종목은 구성대로 나눔)
+function groupAssetTargets(pf, gid) {
+  const T = {};
+  (pf.tickerTargets || []).filter(t => t.groupId === gid).forEach(t => {
+    const tg = parseFloat(t.target) || 0; if (!tg) return;
+    Object.entries(tickerParts(pf, t.ticker, t.assetId)).forEach(([a, p]) => { T[a] = (T[a] || 0) + tg * p / 100; });
+  });
+  return T;
+}
+
+// 자산군별 현재·목표 (혼합 종목 나눠서)
+function lookThroughAssets(rows, total, refT) {
+  const map = new Map();
+  const get = id => {
+    if (!map.has(id)) {
+      const a = S.assets.find(x => x.id === id);
+      map.set(id, { assetId: id, name: a ? a.name : '미분류', color: a ? a.color : '#A09F9A', cur: 0, target: 0, ref: refT ? (refT[id] || 0) : null });
+    }
+    return map.get(id);
+  };
+  rows.forEach(r => Object.entries(r.mix).forEach(([a, p]) => {
+    const e = get(a); e.cur += r.cur * p / 100; e.target += r.target * p / 100;
+  }));
+  if (refT) Object.keys(refT).forEach(a => { if (refT[a] > 0) get(a); });
+  const order = S.assets.map(a => a.id);
+  return [...map.values()]
+    .map(e => ({ ...e, curPct: total > 0 ? e.cur / total * 100 : 0 }))
+    .filter(e => e.cur > 0 || e.target > 0 || (e.ref || 0) > 0)
+    .sort((a, b) => (order.indexOf(a.assetId) + 1 || 999) - (order.indexOf(b.assetId) + 1 || 999));
+}
+
+// 음수 없는 최소제곱 (Lawson–Hanson) — 종목 몇 개짜리 작은 문제용
+function _nnls(A, b) {
+  const m = A.length, n = A[0].length;
+  let x = new Array(n).fill(0);
+  const P = new Set();
+  const resid = () => b.map((bi, k) => bi - A[k].reduce((s, a, j) => s + a * x[j], 0));
+  const lsq = idx => {
+    const k = idx.length;
+    const M = Array.from({ length: k }, () => new Array(k + 1).fill(0));
+    for (let p = 0; p < k; p++) {
+      for (let q = 0; q < k; q++) { let s = 0; for (let r = 0; r < m; r++) s += A[r][idx[p]] * A[r][idx[q]]; M[p][q] = s; }
+      let s = 0; for (let r = 0; r < m; r++) s += A[r][idx[p]] * b[r]; M[p][k] = s;
+      M[p][p] += 1e-9;
+    }
+    for (let c = 0; c < k; c++) {
+      let piv = c; for (let r = c + 1; r < k; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+      [M[c], M[piv]] = [M[piv], M[c]];
+      const d = M[c][c] || 1e-12;
+      for (let r = 0; r < k; r++) { if (r === c) continue; const f = M[r][c] / d; for (let q = c; q <= k; q++) M[r][q] -= f * M[c][q]; }
+    }
+    return M.map((row, c) => row[k] / (row[c] || 1e-12));
+  };
+  for (let iter = 0; iter < 100; iter++) {
+    const r = resid();
+    const w = Array.from({ length: n }, (_, j) => A.reduce((s, row, k) => s + row[j] * r[k], 0));
+    let jmax = -1, wmax = 1e-7;
+    for (let j = 0; j < n; j++) if (!P.has(j) && w[j] > wmax) { wmax = w[j]; jmax = j; }
+    if (jmax < 0) break;
+    P.add(jmax);
+    for (let inner = 0; inner < 100 && P.size; inner++) {
+      const idx = [...P]; const z = lsq(idx);
+      if (z.every(v => v > 1e-10)) { x = new Array(n).fill(0); idx.forEach((j, k) => { x[j] = z[k]; }); break; }
+      let alpha = 1;
+      idx.forEach((j, k) => { if (z[k] <= 1e-10) { const a = x[j] / (x[j] - z[k]); if (a < alpha) alpha = a; } });
+      idx.forEach((j, k) => { x[j] += alpha * (z[k] - x[j]); });
+      idx.forEach(j => { if (x[j] <= 1e-9) { P.delete(j); x[j] = 0; } });
+    }
+  }
+  return x;
+}
+
+// 기준 그룹의 자산 비율 + 위험자산 한도에 맞춰 이 그룹 목표 종목의 비중 계산
+function rebAutoFit() {
+  const [pf, unitId] = _rebPfUnit(); if (!pf) return;
+  const m = buildRebModel(pf, unitId);
+  if (!m.ref) return;
+  let cands = m.view.filter(r => r.hasTarget);
+  if (!cands.length) cands = m.view.slice();
+  if (!cands.length) { alert('먼저 이 그룹에서 쓸 종목을 「+ 목표 종목 추가」로 넣으세요 (비중은 0이어도 돼요).'); return; }
+  const T = m.ref.T;
+  const assetIds = [...new Set([...Object.keys(T), ...cands.flatMap(r => Object.keys(r.mix))])];
+  const A = [], b = [];
+  assetIds.forEach(a => { A.push(cands.map(r => (r.mix[a] || 0) / 100)); b.push(T[a] || 0); });
+  A.push(cands.map(() => 1)); b.push(100);
+  let w = _nnls(A, b);
+  const cap = m.st.riskCap;
+  const riskOf = ws => ws.reduce((s, x, k) => s + x * cands[k].risk, 0);
+  if (cap > 0 && riskOf(w) > cap + 1e-6) {
+    const W = 1000; // 한도는 반드시 지켜야 하는 조건 → 아주 큰 가중치
+    A[A.length - 1] = cands.map(() => W); b[b.length - 1] = W * 100; // 합계 100%도 똑같이 꼭 지킴
+    A.push(cands.map(r => W * r.risk)); b.push(W * cap);
+    w = _nnls(A, b);
+  }
+  let ws = w.map(x => Math.round(x * 10) / 10);
+  const sum = ws.reduce((s, x) => s + x, 0);
+  if (sum > 0) {
+    // 반올림 오차는 가장 큰 종목에 — 한도가 있으면 위험자산 몫이 가장 작은 종목 중에서
+    let bi = -1;
+    ws.forEach((x, k) => {
+      if (x <= 0) return;
+      if (bi < 0) { bi = k; return; }
+      const better = cap > 0 ? (cands[k].risk < cands[bi].risk || (cands[k].risk === cands[bi].risk && x > ws[bi])) : x > ws[bi];
+      if (better) bi = k;
+    });
+    if (bi >= 0) ws[bi] = Math.round((ws[bi] + 100 - sum) * 10) / 10;
+  }
+
+  const name = id => S.assets.find(a => a.id === id)?.name || '미분류';
+  const got = {}; cands.forEach((r, k) => Object.entries(r.mix).forEach(([a, p]) => { got[a] = (got[a] || 0) + ws[k] * p / 100; }));
+  const miss = assetIds.filter(a => Math.abs((got[a] || 0) - (T[a] || 0)) >= 0.5);
+  const lines = cands.map((r, k) => `• ${r.name}: ${r.target}% → ${ws[k]}%`).join('\n');
+  let msg = `「${m.ref.name}」의 자산 비율에 맞춰 이 그룹 목표 비중을 바꿀까요?\n\n${lines}`;
+  if (cap > 0) msg += `\n\n위험자산 ${riskOf(ws).toFixed(1)}% / 한도 ${cap}%`;
+  if (miss.length) msg += `\n\n⚠ 이 종목들로는 정확히 못 맞추는 자산군:\n` + miss.map(a => `• ${name(a)}: 기준 ${(T[a] || 0).toFixed(1)}% → ${(got[a] || 0).toFixed(1)}%`).join('\n')
+    + `\n(그 자산군을 담은 종목을 추가하거나, 혼합 종목 구성을 확인하세요)`;
+  if (!confirm(msg)) return;
+  cands.forEach((r, k) => { _rebEnsureTarget(r, pf, unitId).target = ws[k]; });
+  pf.assetTargets = computeAssetTargetsFromTickers(pf);
+  save(); renderPortfolios();
+}
+
+function _assetPanelHtml(m) {
+  const st = m.st;
+  if (!m.hasMix && !m.ref && !(st.riskCap > 0)) return '';
+  const pct = v => v.toFixed(1) + '%';
+  const diffChip = d => `<span class="drift-chip ${Math.abs(d) < 0.5 ? 'drift-ok' : d > 0 ? 'drift-over' : 'drift-under'}">${d >= 0 ? '+' : ''}${d.toFixed(1)}%p</span>`;
+  const rows = m.assetsLT.map(e => `<tr>
+      <td><div style="display:flex;align-items:center;gap:6px;font-size:12px;"><span style="width:8px;height:8px;border-radius:50%;background:${e.color};"></span>${_rbH(e.name)}
+        ${isRiskyAssetId(e.assetId) ? '<span style="font-size:10px;color:var(--text3);">위험</span>' : ''}</div></td>
+      <td class="r">${pct(e.curPct)}</td>
+      <td class="r" style="font-weight:600;">${pct(e.target)}</td>
+      ${m.ref ? `<td class="r">${pct(e.ref || 0)}</td><td class="r">${diffChip(e.target - (e.ref || 0))}</td>` : ''}
+    </tr>`).join('');
+  const capCell = v => st.riskCap > 0 ? (v > st.riskCap + 0.05 ? `<span style="color:var(--neg);font-weight:600;">${pct(v)}</span>` : pct(v)) : pct(v);
+  const riskRow = `<tr style="border-top:2px solid var(--border);">
+      <td style="font-size:12px;font-weight:600;">위험자산 합계${st.riskCap > 0 ? ` <span style="font-weight:400;color:var(--text3);">(한도 ${st.riskCap}%)</span>` : ''}</td>
+      <td class="r">${capCell(m.riskCur)}</td><td class="r" style="font-weight:600;">${capCell(m.riskTgt)}</td>
+      ${m.ref ? '<td></td><td></td>' : ''}</tr>`;
+  const refSum = m.ref ? Object.values(m.ref.T).reduce((s, v) => s + v, 0) : 100;
+  return `<div style="margin-top:14px;padding:12px 14px;border:1px solid var(--border2);border-radius:var(--radius);">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+      <span class="card-title">자산군 비율 <span style="font-weight:400;color:var(--text3);">· 혼합 종목은 구성 비율대로 나눠서 계산</span></span>
+      ${m.ref ? `<button class="btn btn-primary" style="padding:6px 12px;font-size:12px;" onclick="rebAutoFit()">⚖ 「${_rbH(m.ref.name)}」 비율에 맞춰 목표 자동 계산</button>` : ''}
+    </div>
+    <div style="overflow-x:auto;"><table style="min-width:420px;">
+      <thead><tr><th>자산군</th><th class="r">현재</th><th class="r">이 그룹 목표</th>
+        ${m.ref ? `<th class="r">기준: ${_rbH(m.ref.name)}</th><th class="r">목표 − 기준</th>` : ''}</tr></thead>
+      <tbody>${rows}${riskRow}</tbody>
+    </table></div>
+    ${m.ref && Math.abs(refSum - 100) > 0.05 ? `<div style="margin-top:6px;font-size:11px;color:#B05A1A;">⚠ 기준 그룹의 목표 합계가 ${refSum.toFixed(1)}%예요.</div>` : ''}
+    <div style="margin-top:6px;font-size:11px;color:var(--text3);line-height:1.6;">
+      ${m.ref ? '자동 계산은 이 그룹에 목표 종목으로 넣어 둔 종목들(0%여도 됨) 안에서 비중을 정해요. ' : ''}
+      혼합 종목은 표에서 자산군을 「혼합」으로 바꿔 구성을 넣어요. 어떤 자산군을 위험자산으로 볼지는 「자산군 설정」에서 정해요.
+    </div>
+  </div>`;
+}
+
+// ── 혼합 종목 구성 편집 ──
+function openMixEditor(i) {
+  const [pf] = _rebPfUnit(); const r = _rebView[i]; if (!pf || !r) return;
+  if (!r.name) { alert('종목명이 없어요'); return; }
+  const mix = pf.tickerMix?.[r.name];
+  const parts = mix?.parts || { [r.assetId || S.assets[0]?.id]: 100 };
+  const safe = mix ? !!mix.safe : true;
+  window._mixName = r.name;
+  const overlay = document.createElement('div');
+  overlay.id = '_mixOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  overlay.onclick = e => { if (e.target === overlay) closeMixEditor(); };
+  overlay.innerHTML = `
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;max-width:440px;width:100%;max-height:90vh;overflow-y:auto;" onclick="event.stopPropagation()">
+      <div style="font-size:16px;font-weight:600;margin-bottom:4px;">혼합 종목 구성</div>
+      <div style="font-size:13px;margin-bottom:6px;">${_rbH(r.name)}</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:12px;line-height:1.6;">이 종목이 담고 있는 자산군 비율을 넣으세요. 예: 주식 50 / 채권 50.
+        운용사 자료의 실제 비율을 쓰면 더 정확해요. 모든 그룹에 똑같이 적용돼요.</div>
+      ${S.assets.map(a => `<div style="display:flex;align-items:center;gap:8px;padding:3px 0;">
+        <span style="width:8px;height:8px;border-radius:50%;background:${a.color};"></span>
+        <span style="flex:1;font-size:13px;">${_rbH(a.name)}</span>
+        <input type="number" class="mix-in" data-a="${a.id}" min="0" max="100" step="0.1" value="${parts[a.id] ? Math.round(parts[a.id] * 10) / 10 : ''}" placeholder="0"
+          oninput="_mixTotal()" style="width:80px;text-align:right;padding:4px 8px;font-size:12px;font-family:var(--mono);" />%
+      </div>`).join('')}
+      <div id="mix-total" style="text-align:right;font-size:12px;margin-top:6px;"></div>
+      <label style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:12px;color:var(--text2);cursor:pointer;">
+        <input type="checkbox" id="mix-safe" ${safe ? 'checked' : ''} style="margin-top:2px;" />
+        <span>위험자산 한도 계산 때 이 종목 전체를 <b>안전자산</b>으로 인정 (IRP 의 채권혼합형 등)</span></label>
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+        ${mix ? `<button class="btn" onclick="clearMix()">혼합 해제</button>` : ''}
+        <button class="btn" onclick="closeMixEditor()">취소</button>
+        <button class="btn btn-primary" onclick="saveMix()">저장</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  _mixTotal();
+}
+function _mixTotal() {
+  const sum = [...document.querySelectorAll('#_mixOverlay .mix-in')].reduce((s, el) => s + (parseFloat(el.value) || 0), 0);
+  const el = document.getElementById('mix-total');
+  if (el) el.innerHTML = `<span style="color:${Math.abs(sum - 100) < 0.05 ? 'var(--pos)' : 'var(--neg)'};font-family:var(--mono);">합계 ${Math.round(sum * 10) / 10}%</span>`;
+}
+function closeMixEditor() { document.getElementById('_mixOverlay')?.remove(); renderPortfolios(); }
+function _setTickerAsset(pf, name, assetId) {
+  (pf.tickerTargets || []).forEach(t => { if (t.ticker === name) t.assetId = assetId; });
+  pf.assetTargets = computeAssetTargetsFromTickers(pf);
+}
+function saveMix() {
+  const [pf] = _rebPfUnit(); const name = window._mixName; if (!pf || !name) return;
+  const parts = {};
+  document.querySelectorAll('#_mixOverlay .mix-in').forEach(el => { const v = parseFloat(el.value) || 0; if (v > 0) parts[el.dataset.a] = v; });
+  const sum = Object.values(parts).reduce((s, v) => s + v, 0);
+  if (Math.abs(sum - 100) > 0.05) { alert(`합계가 100%가 되어야 해요 (지금 ${Math.round(sum * 10) / 10}%)`); return; }
+  const ids = Object.keys(parts);
+  const main = ids.reduce((a, b) => (parts[b] > parts[a] ? b : a), ids[0]);
+  if (!pf.tickerMix) pf.tickerMix = {};
+  if (ids.length < 2) delete pf.tickerMix[name];
+  else pf.tickerMix[name] = { parts, safe: !!document.getElementById('mix-safe')?.checked };
+  _setTickerAsset(pf, name, main); // 대시보드 등 혼합을 모르는 곳에서는 가장 큰 자산군으로 보이게
+  document.getElementById('_mixOverlay')?.remove();
+  save(); renderPortfolios();
+}
+function clearMix() {
+  const [pf] = _rebPfUnit(); const name = window._mixName; if (!pf || !name) return;
+  if (pf.tickerMix) delete pf.tickerMix[name];
+  document.getElementById('_mixOverlay')?.remove();
+  save(); renderPortfolios();
 }
 
 // ── 화면 ────────────────────────────────────────────────────
@@ -4646,8 +4929,11 @@ function renderRebUnit(pf, unit, m) {
         }).join('')}
     </div>`;
 
-  const assetOpts = sel => S.assets.map(x => `<option value="${x.id}" ${x.id === sel ? 'selected' : ''}>${_rbH(x.name)}</option>`).join('')
-    + (S.assets.some(x => x.id === sel) ? '' : `<option value="" selected>미분류</option>`);
+  const assetOpts = (sel, isMix) => S.assets.map(x => `<option value="${x.id}" ${!isMix && x.id === sel ? 'selected' : ''}>${_rbH(x.name)}</option>`).join('')
+    + (!isMix && !S.assets.some(x => x.id === sel) ? `<option value="" selected>미분류</option>` : '')
+    + `<option value="__mix" ${isMix ? 'selected' : ''}>혼합 (구성 입력)…</option>`;
+  const mixLabel = r => Object.entries(r.mix).sort((a, b) => b[1] - a[1])
+    .map(([a, p]) => `${_rbH(S.assets.find(x => x.id === a)?.name || '미분류')} ${Math.round(p * 10) / 10}`).join(' · ');
 
   let vi = 0;
   const body = m.groups.map((g, gi) => {
@@ -4666,8 +4952,9 @@ function renderRebUnit(pf, unit, m) {
       const i = vi++;
       const rFlag = sig.flagged.has('r:' + r.name);
       return `<tr>
-        <td style="width:110px;"><select onchange="rebSetAsset(${i},this.value)" style="font-size:11px;padding:3px 4px;width:104px;">${assetOpts(r.assetId)}</select></td>
+        <td style="width:110px;"><select onchange="rebSetAsset(${i},this.value)" style="font-size:11px;padding:3px 4px;width:104px;">${assetOpts(r.assetId, r.isMix)}</select></td>
         <td style="font-size:13px;min-width:140px;">${_rbH(r.name || '(이름 없음)')}
+          ${r.isMix ? `<div><a href="#" onclick="openMixEditor(${i});return false;" style="font-size:10px;color:#6A5ACD;text-decoration:none;" title="구성 수정">${mixLabel(r)}${r.risk === 0 ? ' · 안전자산' : ''} ✎</a></div>` : ''}
           ${!r.held ? '<span style="font-size:10px;color:#1D6FC4;margin-left:4px;">신규</span>' : ''}
           ${!r.hasTarget ? '<span style="font-size:10px;color:var(--text3);margin-left:4px;">목표 없음</span>' : ''}</td>
         <td class="r">${r.cur > 0 ? _rbWon(r.cur) : '<span class="muted">0</span>'}</td>
@@ -4728,6 +5015,15 @@ function renderRebUnit(pf, unit, m) {
         <input type="number" min="0" step="0.1" value="${st.tradeBand}" onchange="setUnitSetting('${pf.id}','${unit.id}','tradeBand',Math.max(0,parseFloat(this.value)||0))" style="width:56px;text-align:right;padding:3px 6px;font-size:12px;" />%p</label>` : ''}
       <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" ${st.showQty ? 'checked' : ''} onchange="setUnitSetting('${pf.id}','${unit.id}','showQty',this.checked)" /> 수량 표시 (현재가 있는 종목)</label>
     </div>
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:var(--text2);">
+      <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;" title="종목은 달라도 자산군 비율은 이 그룹과 같게 맞춰요 (예: IRP → 일반계좌)">자산 비율 기준
+        <select onchange="setUnitSetting('${pf.id}','${unit.id}','refGroup',this.value)" style="font-size:12px;padding:4px 6px;">
+          <option value="">— 없음 (이 그룹 목표 그대로) —</option>
+          ${(pf.groups || []).filter(g => g.id !== unit.id).map(g => `<option value="${g.id}" ${st.refGroup === g.id ? 'selected' : ''}>${_rbH(g.name)}</option>`).join('')}
+        </select></label>
+      <label style="display:flex;align-items:center;gap:4px;white-space:nowrap;" title="IRP·DC 등 위험자산 투자 한도. 0이면 끔">위험자산 한도
+        <input type="number" min="0" max="100" step="1" value="${st.riskCap || 0}" onchange="setUnitSetting('${pf.id}','${unit.id}','riskCap',Math.max(0,Math.min(100,parseFloat(this.value)||0)))" style="width:56px;text-align:right;padding:3px 6px;font-size:12px;" />%</label>
+    </div>
 
     ${m.view.length === 0
       ? `<div class="empty" style="padding:24px;">${accts.length ? '연결된 계좌에 보유 종목이 없어요. 아래에서 목표 종목을 추가하세요.' : '「⚙ 계좌 연결」에서 이 그룹에 넣을 계좌를 체크하세요.'}</div>`
@@ -4738,6 +5034,8 @@ function renderRebUnit(pf, unit, m) {
           </tr></thead>
           <tbody>${body}</tbody>
         </table></div>`}
+
+    <div id="rb-assetpanel">${_assetPanelHtml(m)}</div>
 
     <datalist id="ticker-pool">${collectAllTickers().map(t => `<option value="${_rbH(t)}"></option>`).join('')}</datalist>
     <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--border2);">
@@ -4805,6 +5103,7 @@ function _rebPatch() {
   set('rb-sum', _sumHtml(m));
   set('rb-result', _resultHtml(m));
   set('rb-signal', _signalHtml(m));
+  set('rb-assetpanel', _assetPanelHtml(m));
 }
 
 function _rebPfUnit() {
@@ -4833,6 +5132,8 @@ function rebSetTarget(i, val) {
 function rebSetAsset(i, assetId) {
   const [pf, unitId] = _rebPfUnit(); if (!pf) return;
   const r = _rebView[i]; if (!r) return;
+  if (assetId === '__mix') { openMixEditor(i); return; }
+  if (r.isMix && pf.tickerMix) delete pf.tickerMix[r.name]; // 단일 자산군으로 되돌림
   const t = _rebEnsureTarget(r, pf, unitId);
   t.assetId = assetId;
   save(); renderPortfolios();
