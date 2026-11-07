@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 혼합종목·IRP</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 종목별위험지정</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -4561,7 +4561,8 @@ function rebSignal(m) {
 
 // ── 혼합 종목 · 자산 비율 기준 그룹 · 위험자산 한도 ─────────
 // pf.tickerMix[종목명] = { parts: {자산군id: %}, safe: bool }  — 한 종목이 여러 자산군에 걸친 경우(예: 주식·채권 혼합형).
-//   safe = 위험자산 한도 계산 때 종목 전체를 안전자산으로 인정(IRP 의 채권혼합형 등).
+// pf.tickerRisk[종목명] = 'risky' | 'safe' — 사용자가 종목별로 지정한 위험/안전 구분(퇴직연금은 상품 단위로 정해짐).
+//   지정이 없으면 예전 방식: 혼합 종목의 safe 표시(구 버전) → 없으면 자산군 설정의 「위험자산」 체크로 나눠서 계산.
 // 그룹 설정 refGroup = 자산 비율을 따라갈 그룹, riskCap = 위험자산 한도(%).
 function isRiskyAsset(a) {
   if (!a) return false;
@@ -4583,6 +4584,9 @@ function tickerParts(pf, name, assetId) {
 }
 // 종목 1원 중 위험자산으로 잡히는 몫 (0~1)
 function tickerRiskShare(pf, name, parts) {
+  const des = pf && pf.tickerRisk && name ? pf.tickerRisk[name] : null;
+  if (des === 'risky') return 1;
+  if (des === 'safe') return 0;
   const mix = pf && pf.tickerMix && name ? pf.tickerMix[name] : null;
   if (mix && mix.safe && Object.keys(parts).length > 1) return 0;
   return Object.entries(parts).reduce((s, [a, p]) => s + (isRiskyAssetId(a) ? p / 100 : 0), 0);
@@ -4682,6 +4686,19 @@ function rebAutoFit() {
     A.push(cands.map(r => W * r.risk)); b.push(W * cap);
     w = _nnls(A, b);
   }
+  // 2단계: 같은 자산 비율을 만드는 조합이 여러 개면(예: 국내주식 ETF + 채권 ETF ↔ 주식·채권 혼합형)
+  //        그 비율은 그대로 두고 위험자산이 가장 적은 조합을 고른다 → 혼합(안전자산 인정) 종목을 최대한 활용
+  if (cands.some(r => r.risk < 1) && cands.some(r => r.risk > 0)) {
+    const W = 1000;
+    const A2 = [], b2 = [];
+    assetIds.forEach(a => {
+      const row = cands.map(r => (r.mix[a] || 0) / 100);
+      A2.push(row.map(v => W * v)); b2.push(W * row.reduce((s, v, k) => s + v * w[k], 0));
+    });
+    A2.push(cands.map(() => W)); b2.push(W * 100);
+    A2.push(cands.map(r => r.risk)); b2.push(0);
+    w = _nnls(A2, b2);
+  }
   let ws = w.map(x => Math.round(x * 10) / 10);
   const sum = ws.reduce((s, x) => s + x, 0);
   if (sum > 0) {
@@ -4741,7 +4758,7 @@ function _assetPanelHtml(m) {
     ${m.ref && Math.abs(refSum - 100) > 0.05 ? `<div style="margin-top:6px;font-size:11px;color:#B05A1A;">⚠ 기준 그룹의 목표 합계가 ${refSum.toFixed(1)}%예요.</div>` : ''}
     <div style="margin-top:6px;font-size:11px;color:var(--text3);line-height:1.6;">
       ${m.ref ? '자동 계산은 이 그룹에 목표 종목으로 넣어 둔 종목들(0%여도 됨) 안에서 비중을 정해요. ' : ''}
-      혼합 종목은 표에서 자산군을 「혼합」으로 바꿔 구성을 넣어요. 어떤 자산군을 위험자산으로 볼지는 「자산군 설정」에서 정해요.
+      혼합 종목은 표에서 자산군을 「혼합」으로 바꿔 구성을 넣어요. 위험/안전은 종목명 아래에서 종목마다 지정하고, 지정하지 않은 종목은 「자산군 설정」의 위험자산 체크로 계산해요.
     </div>
   </div>`;
 }
@@ -4752,7 +4769,6 @@ function openMixEditor(i) {
   if (!r.name) { alert('종목명이 없어요'); return; }
   const mix = pf.tickerMix?.[r.name];
   const parts = mix?.parts || { [r.assetId || S.assets[0]?.id]: 100 };
-  const safe = mix ? !!mix.safe : true;
   window._mixName = r.name;
   const overlay = document.createElement('div');
   overlay.id = '_mixOverlay';
@@ -4771,9 +4787,7 @@ function openMixEditor(i) {
           oninput="_mixTotal()" style="width:80px;text-align:right;padding:4px 8px;font-size:12px;font-family:var(--mono);" />%
       </div>`).join('')}
       <div id="mix-total" style="text-align:right;font-size:12px;margin-top:6px;"></div>
-      <label style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:12px;color:var(--text2);cursor:pointer;">
-        <input type="checkbox" id="mix-safe" ${safe ? 'checked' : ''} style="margin-top:2px;" />
-        <span>위험자산 한도 계산 때 이 종목 전체를 <b>안전자산</b>으로 인정 (IRP 의 채권혼합형 등)</span></label>
+      <div style="margin-top:10px;font-size:11px;color:var(--text3);">위험자산/안전자산 구분은 표에서 종목마다 따로 지정해요 (위험자산 한도를 넣은 그룹에 표시).</div>
       <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
         ${mix ? `<button class="btn" onclick="clearMix()">혼합 해제</button>` : ''}
         <button class="btn" onclick="closeMixEditor()">취소</button>
@@ -4803,7 +4817,11 @@ function saveMix() {
   const main = ids.reduce((a, b) => (parts[b] > parts[a] ? b : a), ids[0]);
   if (!pf.tickerMix) pf.tickerMix = {};
   if (ids.length < 2) delete pf.tickerMix[name];
-  else pf.tickerMix[name] = { parts, safe: !!document.getElementById('mix-safe')?.checked };
+  else {
+    // 예전 「안전자산으로 인정」 체크는 종목별 지정으로 옮긴다
+    if (pf.tickerMix[name]?.safe) { if (!pf.tickerRisk) pf.tickerRisk = {}; if (!pf.tickerRisk[name]) pf.tickerRisk[name] = 'safe'; }
+    pf.tickerMix[name] = { parts };
+  }
   _setTickerAsset(pf, name, main); // 대시보드 등 혼합을 모르는 곳에서는 가장 큰 자산군으로 보이게
   document.getElementById('_mixOverlay')?.remove();
   save(); renderPortfolios();
@@ -4932,6 +4950,19 @@ function renderRebUnit(pf, unit, m) {
   const assetOpts = (sel, isMix) => S.assets.map(x => `<option value="${x.id}" ${!isMix && x.id === sel ? 'selected' : ''}>${_rbH(x.name)}</option>`).join('')
     + (!isMix && !S.assets.some(x => x.id === sel) ? `<option value="" selected>미분류</option>` : '')
     + `<option value="__mix" ${isMix ? 'selected' : ''}>혼합 (구성 입력)…</option>`;
+  // 위험/안전 지정 — 위험자산 한도가 있는 그룹이거나 이미 지정한 종목에 표시
+  const showRiskAll = st.riskCap > 0;
+  const riskSel = (r, i) => {
+    const des = pf.tickerRisk?.[r.name] || '';
+    const autoTxt = r.risk >= 0.999 ? '위험' : r.risk <= 0.001 ? '안전' : `위험 ${Math.round(r.risk * 100)}%`;
+    const col = des === 'risky' ? 'var(--neg)' : des === 'safe' ? 'var(--pos)' : 'var(--text3)';
+    return `<div><select onchange="rebSetRisk(${i},this.value)" title="퇴직연금 위험자산/안전자산 구분 (모든 그룹에 적용)"
+      style="font-size:10px;padding:1px 3px;margin-top:2px;width:auto;max-width:190px;color:${col};border-color:${des ? col : 'var(--border)'};">
+      <option value="" ${!des ? 'selected' : ''}>미지정 (자산군 기준: ${autoTxt})</option>
+      <option value="risky" ${des === 'risky' ? 'selected' : ''}>위험자산</option>
+      <option value="safe" ${des === 'safe' ? 'selected' : ''}>안전자산</option>
+    </select></div>`;
+  };
   const mixLabel = r => Object.entries(r.mix).sort((a, b) => b[1] - a[1])
     .map(([a, p]) => `${_rbH(S.assets.find(x => x.id === a)?.name || '미분류')} ${Math.round(p * 10) / 10}`).join(' · ');
 
@@ -4951,10 +4982,12 @@ function renderRebUnit(pf, unit, m) {
     const rows = g.rows.map(r => {
       const i = vi++;
       const rFlag = sig.flagged.has('r:' + r.name);
+      const showRisk = r.name && (showRiskAll || !!pf.tickerRisk?.[r.name]);
       return `<tr>
         <td style="width:110px;"><select onchange="rebSetAsset(${i},this.value)" style="font-size:11px;padding:3px 4px;width:104px;">${assetOpts(r.assetId, r.isMix)}</select></td>
         <td style="font-size:13px;min-width:140px;">${_rbH(r.name || '(이름 없음)')}
-          ${r.isMix ? `<div><a href="#" onclick="openMixEditor(${i});return false;" style="font-size:10px;color:#6A5ACD;text-decoration:none;" title="구성 수정">${mixLabel(r)}${r.risk === 0 ? ' · 안전자산' : ''} ✎</a></div>` : ''}
+          ${r.isMix ? `<div><a href="#" onclick="openMixEditor(${i});return false;" style="font-size:10px;color:#6A5ACD;text-decoration:none;" title="구성 수정">${mixLabel(r)} ✎</a></div>` : ''}
+          ${showRisk ? riskSel(r, i) : ''}
           ${!r.held ? '<span style="font-size:10px;color:#1D6FC4;margin-left:4px;">신규</span>' : ''}
           ${!r.hasTarget ? '<span style="font-size:10px;color:var(--text3);margin-left:4px;">목표 없음</span>' : ''}</td>
         <td class="r">${r.cur > 0 ? _rbWon(r.cur) : '<span class="muted">0</span>'}</td>
@@ -5136,6 +5169,13 @@ function rebSetAsset(i, assetId) {
   if (r.isMix && pf.tickerMix) delete pf.tickerMix[r.name]; // 단일 자산군으로 되돌림
   const t = _rebEnsureTarget(r, pf, unitId);
   t.assetId = assetId;
+  save(); renderPortfolios();
+}
+
+function rebSetRisk(i, v) {
+  const [pf] = _rebPfUnit(); const r = _rebView[i]; if (!pf || !r || !r.name) return;
+  if (!pf.tickerRisk) pf.tickerRisk = {};
+  if (v === 'risky' || v === 'safe') pf.tickerRisk[r.name] = v; else delete pf.tickerRisk[r.name];
   save(); renderPortfolios();
 }
 
