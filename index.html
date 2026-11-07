@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-07 리밸런싱개편</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 그룹만사용</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -147,7 +147,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
     </div>
     <div class="nav-item" onclick="showPage('portfolios')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M2 6h12M6 3v10"/></svg>
-      포트폴리오
+      리밸런싱
     </div>
     <div class="nav-item" onclick="showPage('sync')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13.5 8A5.5 5.5 0 112.5 6M2 3v3h3" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -164,14 +164,11 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <div id="page-dashboard" class="page active">
   <div class="page-header">
     <div class="page-title">대시보드</div>
-    <div class="page-sub">전체 포트폴리오 현황</div>
+    <div class="page-sub">전체 자산 현황</div>
   </div>
   <div class="month-bar">
     <label>조회 월</label>
     <select id="dash-month" class="month-select" onchange="renderDashboard()" style="font-size:12px;padding:4px 8px;"></select>
-    <span class="bar-sep"></span>
-    <label>포트폴리오</label>
-    <select id="dash-pf" class="month-select" onchange="setActivePortfolio(this.value)" style="font-size:12px;padding:4px 8px;"></select>
     <span class="bar-sep"></span>
     <label>그룹</label>
     <select id="dash-group" class="month-select" onchange="setActiveGroup(this.value)" style="font-size:12px;padding:4px 8px;"></select>
@@ -273,10 +270,10 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 
   <!-- 4) 종목별 목표 비교 -->
   <div class="card" id="dash-ticker-block" style="margin-bottom:14px;display:none;">
-    <div class="card-head"><span class="card-title">종목별 목표 비교</span><span style="font-size:11px;color:var(--text3);">포트폴리오 전체 기준</span></div>
+    <div class="card-head"><span class="card-title">종목별 목표 비교</span><span style="font-size:11px;color:var(--text3);">선택한 범위 기준</span></div>
     <table>
       <thead><tr>
-        <th>자산군</th><th>종목명</th><th class="r">잔고</th><th class="r">포트폴리오 비중</th><th class="r">목표</th><th class="r">편차</th>
+        <th>자산군</th><th>종목명</th><th class="r">잔고</th><th class="r">비중</th><th class="r">목표</th><th class="r">편차</th>
       </tr></thead>
       <tbody></tbody>
     </table>
@@ -447,7 +444,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <div id="page-assets" class="page">
   <div class="page-header">
     <div class="page-title">자산군 설정</div>
-    <div class="page-sub">전체 자산군 마스터 목록 · 포트폴리오는 「포트폴리오」 메뉴에서</div>
+    <div class="page-sub">전체 자산군 마스터 목록 · 그룹과 목표 비중은 「리밸런싱」 메뉴에서</div>
   </div>
 
   <div class="card" style="margin-bottom:14px;">
@@ -502,23 +499,22 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
   </div>
 </div>
 
-<!-- 포트폴리오 -->
+<!-- 리밸런싱 (예전 「포트폴리오」) -->
 <div id="page-portfolios" class="page">
   <div class="page-header">
-    <div class="page-title">포트폴리오 · 리밸런싱</div>
+    <div class="page-title">리밸런싱</div>
     <div class="page-sub">그룹별 현재 금액 → 목표 비중 입력 → 목표 금액과 매매 금액 자동 계산 · 리밸런싱 필요 여부 표시</div>
   </div>
 
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head">
-      <span class="card-title">포트폴리오 목록</span>
-      <span style="font-size:11px;color:var(--text3);">예: 일반자산배분 / 개인연금 / IRP</span>
+      <span class="card-title">리밸런싱 그룹</span>
+      <span style="font-size:11px;color:var(--text3);">그룹 안의 계좌끼리 합산 · 그룹마다 목표 비중이 따로</span>
     </div>
-    <div id="pf-list" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;"></div>
+    <div id="pf-list" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;"></div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <input type="text" id="new-pf-name" placeholder="새 포트폴리오 이름 (예: 일반자산배분)" style="flex:1;min-width:200px;" />
-      <input type="color" id="new-pf-color" value="#1D6FC4" style="width:40px;height:34px;" />
-      <button class="btn" onclick="addPortfolio()">+ 추가</button>
+      <input type="text" id="new-group-name" placeholder="새 그룹 이름 (예: 연금저축)" style="flex:1;min-width:180px;" onkeydown="if(event.key==='Enter')addGroup()" />
+      <button class="btn" onclick="addGroup()">+ 그룹 추가</button>
     </div>
   </div>
 
@@ -872,7 +868,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
     <div class="card" style="margin-bottom:14px;">
       <div class="card-head"><span class="card-title">계좌 / 카드 목록</span></div>
       <div style="overflow-x:auto;">
-      <table style="min-width:600px;"><thead><tr><th>색상</th><th>이름</th><th>계좌번호</th><th>종류</th><th style="font-size:11px;white-space:nowrap;">포트폴리오 연결</th><th class="r">현재 잔고</th><th></th></tr></thead>
+      <table style="min-width:600px;"><thead><tr><th>색상</th><th>이름</th><th>계좌번호</th><th>종류</th><th style="font-size:11px;white-space:nowrap;">투자계좌 연결</th><th class="r">현재 잔고</th><th></th></tr></thead>
       <tbody id="l-acct-table"></tbody></table>
       </div>
       <div style="margin-top:14px;display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
@@ -1176,7 +1172,7 @@ let S = {
   // 월별 잔고 데이터
   months: {},        // months[YYYY-MM][acctNo][ticker] = {name, balance, assetId, added}
   tickerMap: {},     // ticker → assetId 기억
-  // 포트폴리오: 투자 용도별 (일반자산배분/개인연금/IRP 등)
+  // 포트폴리오: 화면에서는 숨김. 기본 묶음 하나(S.portfolios[0])만 두고 그 안의 groups 가 리밸런싱 그룹 (ensureFlatGroups)
   // 포트폴리오: [{id, name, color, groups:[{id, name}], tickerTargets:[{assetId,ticker,target,groupId?}]}]
   // 그룹은 같은 포트폴리오 안에서 계좌 묶음 단위 — 그룹 안 계좌끼리만 합산
   // 그룹을 안 만들면 포트폴리오 전체가 하나의 단위
@@ -1749,7 +1745,7 @@ function addPfAccount() {
   const broker = document.getElementById('pf-new-acct-broker')?.value.trim() || '';
   if (!name) { alert('계좌명을 입력하세요'); return; }
   if (S.accounts.find(a => a.acctNo === acctNo)) { alert('이미 같은 계좌번호의 계좌가 있어요'); return; }
-  S.accounts.push({ id:'acc_' + acctNo.replace(/-/g, ''), acctNo, name, broker, color:nextColor(), portfolioId:S.activePortfolioId||null });
+  S.accounts.push({ id:'acc_' + acctNo.replace(/-/g, ''), acctNo, name, broker, color:nextColor(), portfolioId:null });
   save();
   ['pf-new-acct-name','pf-new-acct-no','pf-new-acct-broker'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   renderAssets();
@@ -1808,7 +1804,7 @@ function depositItems(month, pfId, groupId) {
     } else {
       const i = k.indexOf('__'), pid = i > 0 ? k.slice(0, i) : k, gid = i > 0 ? k.slice(i + 2) : '';
       const p = (S.portfolios || []).find(x => x.id === pid), g = p && (p.groups || []).find(x => x.id === gid);
-      label = (p ? p.name : pid) + (g ? ' › ' + g.name : '') + ' · 이력 탭에서 직접 입력';
+      label = (g ? g.name : (p ? p.name : pid)) + ' · 이력 탭에서 직접 입력';
       if (pfId) included = groupId ? k === `${pfId}__${groupId}` : k.startsWith(pfId + '__');
       else included = !(i > 0 && _unitAllChild(pid, gid));
       if (!included) reason = pfId ? '선택한 범위 밖' : '자녀 계좌 — 총자산에서 제외';
@@ -2218,13 +2214,9 @@ function setAssetView(mode) {
   renderDashboard();
 }
 
-function setActivePortfolio(id) {
-  S.activePortfolioId = id || null;
-  S.activeGroupId = null; // 포트폴리오 바뀌면 그룹 초기화
-  save(); renderDashboard();
-}
 function setActiveGroup(id) {
   S.activeGroupId = id || null;
+  S.activePortfolioId = S.activeGroupId ? (_mainPf()?.id || null) : null;
   save(); renderDashboard();
 }
 
@@ -2459,6 +2451,7 @@ function renderSnapshotTrend(){
 }
 
 function renderDashboard() {
+  _flatCheck();
   renderNetWorth();
   loadSnapshotTrend(false);
   const ms=sortedMonths();
@@ -2467,30 +2460,19 @@ function renderDashboard() {
   sel.innerHTML=ms.length?ms.map(m=>`<option value="${m}">${m}</option>`).join(''):'<option value="">데이터 없음</option>';
   if(prev&&ms.includes(prev)) sel.value=prev; else if(ms.length) sel.value=ms[ms.length-1];
 
-  // 포트폴리오 셀렉터
-  const pfSel = document.getElementById('dash-pf');
-  if (pfSel) {
-    pfSel.innerHTML = `<option value="">— 전체 —</option>` +
-      (S.portfolios||[]).map(p=>`<option value="${p.id}" ${S.activePortfolioId===p.id?'selected':''}>${p.name}</option>`).join('');
-  }
-
   const month=sel.value;
+  // 그룹 셀렉터 — 포트폴리오 개념 없이 그룹만 (전체 = 모든 계좌)
+  const _mpf = _mainPf();
+  const _groups = _mpf ? (_mpf.groups || []) : [];
+  if (S.activeGroupId && !_groups.some(g => g.id === S.activeGroupId)) S.activeGroupId = null;
+  S.activePortfolioId = S.activeGroupId ? _mpf.id : null;
   const pfId = S.activePortfolioId;
-  const pf = pfId ? (S.portfolios||[]).find(p=>p.id===pfId) : null;
-
-  // 그룹 셀렉터 — 포트폴리오 선택되고 그룹이 있을 때만 활성
+  const pf = pfId ? _mpf : null;
   const groupSel = document.getElementById('dash-group');
   if (groupSel) {
-    if (pf && pf.groups && pf.groups.length > 0) {
-      groupSel.disabled = false;
-      groupSel.innerHTML = `<option value="">— 전체 —</option>` +
-        pf.groups.map(g => `<option value="${g.id}" ${S.activeGroupId===g.id?'selected':''}>${g.name}</option>`).join('') +
-        `<option value="__none" ${S.activeGroupId==='__none'?'selected':''}>그룹 미지정</option>`;
-    } else {
-      groupSel.disabled = true;
-      groupSel.innerHTML = `<option value="">—</option>`;
-      if (S.activeGroupId) S.activeGroupId = null;
-    }
+    groupSel.disabled = _groups.length === 0;
+    groupSel.innerHTML = `<option value="">— 전체 —</option>` +
+      _groups.map(g => `<option value="${g.id}" ${S.activeGroupId===g.id?'selected':''}>${g.name}</option>`).join('');
   }
 
   const groupId = S.activeGroupId;
@@ -2658,11 +2640,11 @@ function renderDashboard() {
           p.groups.forEach(g => {
             const accts = linked.filter(a => a.groupId === g.id);
             if (accts.length === 0) return;
-            units.push({ label:`${p.name} › ${g.name}`, pfId:p.id, groupId:g.id, color:p.color });
+            units.push({ label:g.name, pfId:p.id, groupId:g.id, color:p.color });
           });
           const orphans = linked.filter(a => !a.groupId);
           if (orphans.length > 0) {
-            units.push({ label:`${p.name} › 그룹 미지정`, pfId:p.id, groupId:'__none', color:p.color });
+            units.push({ label:'그룹 미지정', pfId:p.id, groupId:'__none', color:p.color });
           }
         } else {
           if (linked.length === 0) return;
@@ -2673,7 +2655,7 @@ function renderDashboard() {
       if (!pfId) {
         const noPfAccts = S.accounts.filter(a => !a.portfolioId);
         if (noPfAccts.length > 0) {
-          units.push({ label:'포트폴리오 미지정', pfId:null, groupId:null, color:'#A09F9A', noPf:true });
+          units.push({ label:'그룹 미지정', pfId:null, groupId:null, color:'#A09F9A', noPf:true });
         }
         // S.accounts에 없는 계좌 (S.months에만 존재)
         if (month) {
@@ -2881,12 +2863,12 @@ function renderDashboard() {
           if (groupId && groupId !== g.id) return;
           const accts = linkedAccts.filter(a => a.groupId === g.id);
           if (accts.length === 0) return;
-          units.push({ label:`${p.name} › ${g.name}`, pfId:p.id, groupId:g.id, accts, color:p.color, type:'group' });
+          units.push({ label:g.name, pfId:p.id, groupId:g.id, accts, color:p.color, type:'group' });
         });
         if (!groupId || groupId === '__none') {
           const orphans = linkedAccts.filter(a => !a.groupId);
           if (orphans.length > 0)
-            units.push({ label:`${p.name} › 그룹 미지정`, pfId:p.id, groupId:'__none', accts:orphans, color:p.color, type:'group-none' });
+            units.push({ label:'그룹 미지정', pfId:p.id, groupId:'__none', accts:orphans, color:p.color, type:'group-none' });
         }
       } else {
         if (groupId) return;
@@ -2897,7 +2879,7 @@ function renderDashboard() {
     if (!pfId) {
       const noPfAccts = S.accounts.filter(a => !a.portfolioId);
       if (noPfAccts.length > 0)
-        units.push({ label:'포트폴리오 미지정', pfId:null, groupId:null, accts:noPfAccts, color:'#A09F9A', type:'no-pf' });
+        units.push({ label:'그룹 미지정', pfId:null, groupId:null, accts:noPfAccts, color:'#A09F9A', type:'no-pf' });
       if (month) {
         const knownAcctNos = new Set(S.accounts.map(a => a.acctNo));
         const unknownAcctNos = Object.keys(S.months[month]||{}).filter(no => !knownAcctNos.has(no));
@@ -3663,7 +3645,7 @@ function applyImport() {
     const assetId=document.getElementById(`imap-${ri}`)?.value||'domestic';
     S.tickerMap[h.ticker]=assetId;
     if(!S.accounts.find(a=>a.acctNo===h.acctNo)) {
-      S.accounts.push({id:'acc_'+h.acctNo.replace(/-/g,''), acctNo:h.acctNo, name:h.acctNo, broker:'미래에셋증권', color:nextColor(), portfolioId:S.activePortfolioId||null});
+      S.accounts.push({id:'acc_'+h.acctNo.replace(/-/g,''), acctNo:h.acctNo, name:h.acctNo, broker:'미래에셋증권', color:nextColor(), portfolioId:null});
     }
     if(!S.months[month][h.acctNo]) S.months[month][h.acctNo]={};
     const prev=S.months[month][h.acctNo][h.ticker];
@@ -3756,6 +3738,7 @@ async function refreshStockPrices() {
 // ── HISTORY ────────────────────────────────────────────────
 let histCh=null, histReturnCh=null;
 function renderHistory() {
+  _flatCheck();
   populateHistManualForm();
   const ms=sortedMonths(), totals=ms.map(m=>monthTotal(m));
   const deposits = ms.map(m => monthDeposit(m));
@@ -3944,10 +3927,10 @@ function renderHistory() {
       if (p.groups && p.groups.length > 0) {
         p.groups.forEach(g => {
           if (linked.filter(a => a.groupId === g.id).length === 0) return;
-          units.push({ label:`${p.name} › ${g.name}`, pfId:p.id, groupId:g.id, color:p.color });
+          units.push({ label:g.name, pfId:p.id, groupId:g.id, color:p.color });
         });
         if (linked.filter(a => !a.groupId).length > 0) {
-          units.push({ label:`${p.name} › 그룹 미지정`, pfId:p.id, groupId:'__none', color:p.color });
+          units.push({ label:'그룹 미지정', pfId:p.id, groupId:'__none', color:p.color });
         }
       } else {
         if (linked.length === 0) return;
@@ -3957,7 +3940,7 @@ function renderHistory() {
     // 포트폴리오 미지정 계좌
     const noPfAccts = S.accounts.filter(a => !a.portfolioId);
     if (noPfAccts.length > 0) {
-      units.push({ label:'포트폴리오 미지정', pfId:'__nopf', groupId:null, color:'#A09F9A' });
+      units.push({ label:'그룹 미지정', pfId:'__nopf', groupId:null, color:'#A09F9A' });
     }
     return units;
   }
@@ -4241,6 +4224,7 @@ function flushAssetInputs() {
 }
 
 function renderAssets() {
+  _flatCheck();
   document.getElementById('asset-table').innerHTML=S.assets.map((a,i)=>`
     <tr draggable="true"
       ondragstart="_dragIdx=${i};event.dataTransfer.effectAllowed='move';"
@@ -4260,10 +4244,8 @@ function renderAssets() {
     aml.innerHTML=S.accounts.length===0
       ?`<div style="font-size:13px;color:var(--text3);padding:8px 0;">아직 계좌가 없습니다. CSV를 업로드하면 자동 생성되고, 아래에서 직접 추가할 수도 있어요.</div>`
       :`<table>
-          <thead><tr><th>색상</th><th>계좌명</th><th>별명</th><th>계좌번호</th><th>증권사</th><th>포트폴리오</th><th>그룹</th><th></th></tr></thead>
-          <tbody>${S.accounts.map((acc,ai)=>{
-            const pf = (S.portfolios||[]).find(p=>p.id===acc.portfolioId);
-            const groups = pf?.groups||[];
+          <thead><tr><th>색상</th><th>계좌명</th><th>별명</th><th>계좌번호</th><th>증권사</th><th>그룹</th><th></th></tr></thead>
+          <tbody>${(()=>{ const _mpf=_mainPf(); const groups=_mpf?.groups||[]; return S.accounts.map((acc,ai)=>{
             return `<tr>
             <td><input type="color" value="${acc.color}" onchange="S.accounts[${ai}].color=this.value;save();" style="width:28px;height:28px;border:none;padding:0;cursor:pointer;border-radius:6px;" /></td>
             <td><input type="text" value="${acc.name}" onchange="S.accounts[${ai}].name=this.value;save();" style="border:1px solid var(--border2);border-radius:6px;padding:4px 8px;font-size:13px;width:120px;" /></td>
@@ -4271,34 +4253,16 @@ function renderAssets() {
             <td><span style="font-family:var(--mono);font-size:11px;color:var(--text3);">${acc.acctNo}</span></td>
             <td><input type="text" value="${acc.broker||''}" onchange="S.accounts[${ai}].broker=this.value;save();" style="border:1px solid var(--border2);border-radius:6px;padding:4px 8px;font-size:12px;width:90px;" /></td>
             <td>
-              <select onchange="onAcctPortfolioChange(${ai},this.value)" style="font-size:12px;padding:4px 6px;width:130px;">
+              <select onchange="setAcctGroup(${ai},this.value)" style="font-size:12px;padding:4px 6px;width:130px;">
                 <option value="">— 미지정 —</option>
-                ${(S.portfolios||[]).map(p=>`<option value="${p.id}" ${acc.portfolioId===p.id?'selected':''}>${p.name}</option>`).join('')}
+                ${groups.map(g=>`<option value="${g.id}" ${acc.portfolioId===_mpf?.id&&acc.groupId===g.id?'selected':''}>${g.name}</option>`).join('')}
               </select>
-            </td>
-            <td>
-              ${groups.length===0
-                ? `<span style="font-size:11px;color:var(--text3);">${pf?'(그룹 없음)':'-'}</span>`
-                : `<select onchange="S.accounts[${ai}].groupId=this.value||null;save();renderDashboard();" style="font-size:12px;padding:4px 6px;width:120px;">
-                    <option value="">— 미지정 —</option>
-                    ${groups.map(g=>`<option value="${g.id}" ${acc.groupId===g.id?'selected':''}>${g.name}</option>`).join('')}
-                  </select>`
-              }
             </td>
             <td><button class="btn-sm btn-danger" onclick="if(confirm('삭제?')){S.accounts.splice(${ai},1);save();renderAssets();}">삭제</button></td>
           </tr>`;
-          }).join('')}</tbody>
+          }).join(''); })()}</tbody>
         </table>`;
   }
-}
-
-// 계좌의 포트폴리오를 변경할 때 — 다른 포트폴리오로 옮기면 기존 그룹 매핑 무효화
-function onAcctPortfolioChange(ai, val) {
-  S.accounts[ai].portfolioId = val || null;
-  S.accounts[ai].groupId = null; // 포트폴리오 바뀌면 그룹 초기화
-  save();
-  renderAssets();
-  renderDashboard();
 }
 
 function deleteAsset(idx) {
@@ -4330,7 +4294,6 @@ function addAsset() {
 // ── PORTFOLIOS / 리밸런싱 ───────────────────────────────────
 // 데이터 구조는 그대로: 포트폴리오 › 그룹(=리밸런싱 단위) › 종목 목표(pf.tickerTargets[].groupId)
 // 그룹이 없으면 포트폴리오 전체가 하나의 단위('__none'). 그룹별 설정은 pf.unitSettings[unitId].
-let _activePfTab = null;     // 현재 보고 있는 포트폴리오 ID
 const _activeUnit = {};      // pfId → 보고 있는 단위 ID
 const _rebExtra = {};        // 'pfId|unitId' → 추가 입금(음수 = 출금). 저장하지 않음
 let _rebCtx = null;          // 현재 그려진 리밸런싱 화면 {pfId, unitId}
@@ -4356,20 +4319,10 @@ function _todayStr() {
 
 function _pf(pfId) { return (S.portfolios || []).find(p => p.id === pfId); }
 
-// 리밸런싱 단위 목록 (그룹들 + 필요할 때만 '그룹 미지정'/'전체')
+// 리밸런싱 단위 목록 = 그룹들 (ensureFlatGroups 가 그룹 아닌 단위를 모두 그룹으로 정리해 둠)
 function pfUnits(pf) {
-  const groups = pf.groups || [];
-  const units = groups.map(g => ({ id: g.id, name: g.name, isGroup: true }));
-  if (groups.length === 0) {
-    units.push({ id: '__none', name: '전체', isGroup: false });
-  } else {
-    const hasNone = S.accounts.some(a => a.portfolioId === pf.id && !groups.find(g => g.id === a.groupId))
-      || (pf.tickerTargets || []).some(t => !t.groupId);
-    if (hasNone) units.push({ id: '__none', name: '그룹 미지정', isGroup: false });
-  }
-  return units;
+  return (pf.groups || []).map(g => ({ id: g.id, name: g.name, isGroup: true }));
 }
-
 function unitAccounts(pf, unitId) {
   const groups = pf.groups || [];
   return S.accounts.filter(a => {
@@ -4586,29 +4539,20 @@ function _sigDot(sig) {
 }
 
 function renderPortfolios() {
-  const pfs = S.portfolios || [];
-  if (!_activePfTab && pfs.length > 0) _activePfTab = pfs[0].id;
-  if (_activePfTab && !pfs.find(p => p.id === _activePfTab)) _activePfTab = pfs[0]?.id || null;
-
-  document.getElementById('pf-list').innerHTML = pfs.length === 0
-    ? `<div style="font-size:12px;color:var(--text3);padding:6px 0;">아직 포트폴리오가 없습니다. 아래에서 추가해보세요.</div>`
-    : pfs.map(p => {
-        const need = pfUnits(p).some(u => buildRebModel(p, u.id).signal.state === 'need');
-        return `<div class="preset-chip ${p.id === _activePfTab ? 'active' : ''}" onclick="selectPfTab('${p.id}')">
-          <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};"></span>
-          <span>${_rbH(p.name)}</span>${need ? '<span style="color:var(--neg);font-size:11px;">●</span>' : ''}
-        </div>`;
-      }).join('');
-
+  _flatCheck();
+  const pf = _mainPf();
+  const list = document.getElementById('pf-list');
   const detail = document.getElementById('pf-detail');
   _rebCtx = null;
-  const pf = pfs.find(p => p.id === _activePfTab);
-  if (!pf) { detail.innerHTML = ''; return; }
+  const units = pf ? pfUnits(pf) : [];
+  if (units.length === 0) {
+    list.innerHTML = `<div style="font-size:12px;color:var(--text3);padding:6px 0;">아직 그룹이 없어요. 아래에서 리밸런싱 단위가 될 그룹을 추가하세요 (예: 일반계좌 / 연금저축 / IRP).</div>`;
+    detail.innerHTML = '';
+    return;
+  }
   if (!pf.tickerTargets) pf.tickerTargets = [];
-  if (!pf.groups) pf.groups = [];
   pf.assetTargets = computeAssetTargetsFromTickers(pf);
 
-  const units = pfUnits(pf);
   let unitId = _activeUnit[pf.id];
   if (!units.find(u => u.id === unitId)) unitId = _activeUnit[pf.id] = units[0].id;
   const unit = units.find(u => u.id === unitId);
@@ -4616,32 +4560,14 @@ function renderPortfolios() {
   _rebCtx = { pfId: pf.id, unitId };
   _rebView = m.view;
 
-  const unitChips = units.map(u => {
+  list.innerHTML = units.map(u => {
     const sig = u.id === unitId ? m.signal : buildRebModel(pf, u.id).signal;
     return `<div class="preset-chip ${u.id === unitId ? 'active' : ''}" onclick="selectPfUnit('${pf.id}','${u.id}')">
       ${_sigDot(sig)}<span>${_rbH(u.name)}</span>
       <span style="font-size:10px;opacity:.7;">${unitAccounts(pf, u.id).length}계좌</span>
     </div>`;
   }).join('');
-
-  detail.innerHTML = `
-    <div class="card" style="margin-bottom:14px;">
-      <div class="card-head" style="flex-wrap:wrap;gap:8px;">
-        <span style="display:flex;align-items:center;gap:10px;">
-          <input type="color" value="${pf.color}" onchange="setPfField('${pf.id}','color',this.value)" style="width:28px;height:28px;border:none;padding:0;cursor:pointer;border-radius:6px;" />
-          <input type="text" value="${_rbH(pf.name)}" onchange="setPfField('${pf.id}','name',this.value)" style="font-size:16px;font-weight:600;border:none;background:transparent;padding:0;width:220px;max-width:60vw;" />
-        </span>
-        <button class="btn-sm btn-danger" onclick="deletePortfolio('${pf.id}')">포트폴리오 삭제</button>
-      </div>
-      <div style="font-size:11px;color:var(--text3);margin-bottom:8px;">리밸런싱 그룹 — 그룹 안의 계좌끼리 합산해서 리밸런싱해요 (예: 일반계좌 / 연금저축 / IRP)</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">${unitChips}</div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <input type="text" id="new-group-name-${pf.id}" placeholder="새 그룹 이름 (예: 연금저축)" style="flex:1;min-width:160px;" />
-        <button class="btn" onclick="addPfGroup('${pf.id}')">+ 그룹 추가</button>
-      </div>
-    </div>
-    ${renderRebUnit(pf, unit, m)}
-  `;
+  detail.innerHTML = renderRebUnit(pf, unit, m);
 }
 
 function _signalHtml(m) {
@@ -4708,9 +4634,8 @@ function renderRebUnit(pf, unit, m) {
       ${S.accounts.length === 0 ? '<div class="muted" style="font-size:12px;">계좌가 없어요. 데이터 가져오기로 잔고를 올리면 자동으로 생겨요.</div>' :
         S.accounts.map((a, ai) => {
           const inThis = accts.includes(a);
-          const opf = _pf(a.portfolioId);
-          const og = opf?.groups?.find(g => g.id === a.groupId);
-          const where = inThis ? '' : opf ? `${opf.name}${og ? ' › ' + og.name : ''}` : '미지정';
+          const og = _pf(a.portfolioId)?.groups?.find(g => g.id === a.groupId);
+          const where = inThis ? '' : (og ? og.name : '미지정');
           return `<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer;">
             <input type="checkbox" ${inThis ? 'checked' : ''} onchange="linkUnitAccount('${pf.id}','${unit.id}',${ai},this.checked)" />
             <span class="dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${a.color};"></span>
@@ -4826,7 +4751,7 @@ function renderRebUnit(pf, unit, m) {
 
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
       <button class="btn" onclick="rebFillCurrent()">현재 비중으로 목표 채우기</button>
-      <button class="btn" onclick="openCopyDialog('${pf.id}','${unit.id}')">📋 다른 그룹에서 목표 복사</button>
+      <button class="btn" onclick="openCopyDialog('${pf.id}','${unit.id}')">📋 다른 그룹 목표 복사</button>
       <button class="btn btn-primary" onclick="rebMarkDone()">✓ 리밸런싱 완료 기록</button>
     </div>
     <div style="margin-top:8px;font-size:11px;color:var(--text3);">
@@ -5012,145 +4937,186 @@ function computeAssetTargetsFromTickers(pf) {
   return result;
 }
 
-// ── 종목 목표 복사 ────────────────────────────────────────
-function openCopyDialog(targetPfId, targetUnitId) {
-  // 복사 가능한 소스 목록 만들기 (현재 포트폴리오/그룹의 종목 목표가 0개일 필요는 없음 — 추가 복사도 OK)
-  const sources = [];
-  (S.portfolios||[]).forEach(pf => {
-    // 그룹별로 분리해서 표시
-    const groupIds = [...new Set((pf.tickerTargets||[]).map(t=>t.groupId||'__none'))];
-    groupIds.forEach(gid => {
-      const tickers = (pf.tickerTargets||[]).filter(t=>(t.groupId||'__none')===gid);
-      if (tickers.length === 0) return;
-      // 자기 자신은 제외
-      if (pf.id === targetPfId && (gid==='__none'?'__none':gid) === targetUnitId) return;
-      const groupName = gid==='__none'
-        ? (pf.groups?.length>0 ? '그룹 미지정' : '전체')
-        : (pf.groups?.find(g=>g.id===gid)?.name || gid);
-      sources.push({
-        pfId: pf.id,
-        pfName: pf.name,
-        groupId: gid,
-        groupName,
-        tickers,
-        label: `${pf.name} › ${groupName} (${tickers.length}개 종목)`
+// ── 그룹만 쓰기 (포트폴리오 개념 숨김) ──────────────────────
+// 화면에는 「그룹」만 있다. 데이터 안쪽에는 기본 묶음(S.portfolios[0]) 하나만 두고 그 안의 groups 가 그룹 목록.
+// 대시보드·이력 계산은 예전처럼 (pfId, groupId) 로 돌아가므로 그대로 둔다.
+// 계좌가 그룹에 속함 = portfolioId === 기본 묶음 id && groupId === 그룹 id. 미지정 = 둘 다 null.
+function _mainPf(create) {
+  if (!S.portfolios) S.portfolios = [];
+  let pf = S.portfolios[0];
+  if (!pf && create) {
+    pf = { id: 'pf_main', name: '기본', color: '#1D6FC4', groups: [], tickerTargets: [], assetTargets: {} };
+    S.portfolios.push(pf);
+  }
+  return pf || null;
+}
+
+// 예전 데이터 정리 — 여러 포트폴리오 / 그룹 없는 포트폴리오 / 그룹 미지정 단위를 모두 「그룹」으로 편다.
+// 바뀐 게 있으면 true. 같은 데이터면 어느 기기에서 돌려도 같은 결과(그룹 id 가 결정적)라 동기화와 충돌하지 않는다.
+function ensureFlatGroups() {
+  const pfs = S.portfolios || [];
+  if (pfs.length === 0) return false;
+  const main = pfs[0];
+  let changed = false;
+  if (!main.groups) { main.groups = []; }
+  if (!main.tickerTargets) { main.tickerTargets = []; }
+  const names = new Set(main.groups.map(g => g.name));
+  const uniq = n => { let x = n, i = 2; while (names.has(x)) x = `${n} (${i++})`; names.add(x); return x; };
+  const moveDeposits = (fromKeys, toKey) => {
+    Object.values(S.deposits || {}).forEach(d => {
+      if (!d || typeof d !== 'object') return;
+      fromKeys.forEach(k => {
+        if (k === toKey || !(k in d)) return;
+        d[toKey] = (d[toKey] || 0) + (d[k] || 0);
+        delete d[k];
       });
     });
-  });
+  };
+  const moveSettings = (p, fromUnit, toGid) => {
+    const st = p.unitSettings && p.unitSettings[fromUnit];
+    if (!st) return;
+    if (!main.unitSettings) main.unitSettings = {};
+    if (!main.unitSettings[toGid]) main.unitSettings[toGid] = st;
+    if (p !== main || fromUnit !== toGid) delete p.unitSettings[fromUnit];
+  };
 
-  if (sources.length === 0) {
-    alert('복사할 종목 목표가 없습니다.');
-    return;
+  pfs.forEach((p, pi) => {
+    const groups = p.groups || [];
+    const gids = new Set(groups.map(g => g.id));
+    const accts = S.accounts.filter(a => a.portfolioId === p.id);
+    const noneAccts = accts.filter(a => !gids.has(a.groupId));
+    const noneTargets = (p.tickerTargets || []).filter(t => !t.groupId || !gids.has(t.groupId));
+
+    // 1) 그룹이 아닌 단위(그룹 없는 포트폴리오 전체 / 그룹 미지정)에 계좌나 목표가 있으면 진짜 그룹으로 만든다
+    if (noneAccts.length || noneTargets.length) {
+      const gid = 'grp_' + p.id + '_none';
+      if (!gids.has(gid)) {
+        const base = groups.length === 0 ? p.name : (pi === 0 ? '그룹 미지정' : `${p.name} (그룹 미지정)`);
+        groups.push({ id: gid, name: pi === 0 ? uniq(base) : base });
+        p.groups = groups; gids.add(gid);
+      }
+      noneAccts.forEach(a => { a.groupId = gid; });
+      noneTargets.forEach(t => { t.groupId = gid; });
+      moveSettings(p, '__none', gid);
+      moveDeposits([`${p.id}__null`, `${p.id}__none`, `${p.id}____none`], `${main.id}__${gid}`);
+      changed = true;
+    }
+
+    // 2) 첫 번째가 아닌 포트폴리오는 기본 묶음으로 합친다
+    if (pi > 0) {
+      groups.forEach(g => {
+        main.groups.push({ ...g, name: uniq(g.name) });
+        moveSettings(p, g.id, g.id);
+        moveDeposits([`${p.id}__${g.id}`], `${main.id}__${g.id}`);
+      });
+      (p.tickerTargets || []).forEach(t => main.tickerTargets.push(t));
+      S.accounts.forEach(a => { if (a.portfolioId === p.id) a.portfolioId = main.id; });
+      changed = true;
+    }
+  });
+  if (pfs.length > 1) {
+    S.portfolios = [main];
+    if (S.activePortfolioId && S.activePortfolioId !== main.id) { S.activePortfolioId = null; S.activeGroupId = null; }
   }
-
-  // 임시 모달 생성
-  const overlay = document.createElement('div');
-  overlay.id = '_copyOverlay';
-  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
-  overlay.onclick = (e)=>{ if(e.target===overlay) overlay.remove(); };
-
-  overlay.innerHTML = `
-    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;" onclick="event.stopPropagation()">
-      <div style="font-size:16px;font-weight:600;margin-bottom:8px;">종목 목표 복사</div>
-      <div style="font-size:12px;color:var(--text2);margin-bottom:14px;">복사할 원본을 선택하세요. 현재 위치에 추가됩니다.</div>
-      <div style="display:flex;flex-direction:column;gap:6px;">
-        ${sources.map((s,i)=>`
-          <button class="btn" style="text-align:left;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;" onclick="doCopyTickers(${i},'${targetPfId}','${targetUnitId}')">
-            <span>${s.label}</span>
-            <span style="font-size:11px;color:var(--text3);">${s.tickers.reduce((a,t)=>a+(parseFloat(t.target)||0),0).toFixed(1)}%</span>
-          </button>
-        `).join('')}
-      </div>
-      <div style="margin-top:16px;text-align:right;">
-        <button class="btn" onclick="document.getElementById('_copyOverlay').remove()">취소</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(overlay);
-  window._copySources = sources;
-}
-
-function doCopyTickers(srcIdx, targetPfId, targetUnitId) {
-  const src = window._copySources?.[srcIdx]; if (!src) return;
-  const pf = S.portfolios.find(p=>p.id===targetPfId); if (!pf) return;
-  if (!pf.tickerTargets) pf.tickerTargets = [];
-  const targetGid = (targetUnitId && targetUnitId !== '__none') ? targetUnitId : null;
-  // 종목 복사 (groupId만 새 위치로 변경)
-  src.tickers.forEach(t => {
-    pf.tickerTargets.push({
-      assetId: t.assetId,
-      ticker: t.ticker,
-      target: t.target,
-      groupId: targetGid,
-    });
+  // 그룹 미지정인데 기본 묶음에 걸려 있는 계좌는 미지정으로 정리
+  S.accounts.forEach(a => {
+    if (a.portfolioId && !(a.portfolioId === main.id && main.groups.some(g => g.id === a.groupId))) {
+      a.portfolioId = null; a.groupId = null; changed = true;
+    }
   });
-  document.getElementById('_copyOverlay')?.remove();
-  save(); renderPortfolios();
+  if (changed) main.assetTargets = computeAssetTargetsFromTickers(main);
+  return changed;
+}
+function _flatCheck() { try { if (ensureFlatGroups()) save(); } catch (e) { console.warn('ensureFlatGroups', e); } }
+
+// 계좌를 그룹에 넣기/빼기 (gid 없으면 미지정)
+function setAcctGroup(ai, gid) {
+  const a = S.accounts[ai]; if (!a) return;
+  if (gid) { const pf = _mainPf(true); a.portfolioId = pf.id; a.groupId = gid; }
+  else { a.portfolioId = null; a.groupId = null; }
+  save();
+  try { renderAssets(); } catch (e) {}
+  try { renderDashboard(); } catch (e) {}
 }
 
-// ── 그룹 관리 ─────────────────────────────────────────────
-function addPfGroup(pfId) {
-  const pf = S.portfolios.find(p=>p.id===pfId); if(!pf) return;
-  const el = document.getElementById(`new-group-name-${pfId}`);
+function addGroup() {
+  const el = document.getElementById('new-group-name');
   const name = el?.value.trim();
-  if (!name) { alert('그룹명을 입력하세요'); return; }
+  if (!name) { alert('그룹 이름을 입력하세요'); return; }
+  const pf = _mainPf(true);
   if (!pf.groups) pf.groups = [];
+  if (pf.groups.some(g => g.name === name)) { alert('같은 이름의 그룹이 있어요'); return; }
   const id = 'grp_' + Date.now();
   pf.groups.push({ id, name });
-  _activeUnit[pfId] = id; // 만든 그룹을 바로 열고 계좌 연결 패널을 펼침
+  _activeUnit[pf.id] = id; // 만든 그룹을 바로 열고 계좌 연결 패널을 펼침
   _rebAcctOpen = true;
   if (el) el.value = '';
   save(); renderPortfolios();
 }
 
 function renamePfGroup(pfId, groupId, newName) {
-  const pf = S.portfolios.find(p=>p.id===pfId); if(!pf) return;
-  const g = (pf.groups||[]).find(x=>x.id===groupId); if(!g) return;
+  const pf = _pf(pfId); if (!pf) return;
+  const g = (pf.groups || []).find(x => x.id === groupId); if (!g) return;
   g.name = newName.trim() || g.name;
   save(); renderPortfolios();
 }
 
 function deletePfGroup(pfId, groupId) {
-  const pf = S.portfolios.find(p=>p.id===pfId); if(!pf) return;
-  const g = (pf.groups||[]).find(x=>x.id===groupId); if(!g) return;
-  const tickerCount = (pf.tickerTargets||[]).filter(t=>t.groupId===groupId).length;
-  const acctCount = S.accounts.filter(a=>a.portfolioId===pfId&&a.groupId===groupId).length;
-  if (!confirm(`「${g.name}」 그룹을 삭제할까요?\n속한 계좌 ${acctCount}개의 그룹 지정이 해제되고, 이 그룹의 종목 목표 ${tickerCount}개가 「그룹 미지정」으로 이동합니다.`)) return;
-  pf.groups = pf.groups.filter(x=>x.id!==groupId);
-  // 계좌의 그룹 지정 해제
-  S.accounts.forEach(a => { if (a.groupId===groupId) a.groupId = null; });
-  // 종목 목표의 groupId도 해제
-  (pf.tickerTargets||[]).forEach(t => { if (t.groupId===groupId) t.groupId = null; });
+  const pf = _pf(pfId); if (!pf) return;
+  const g = (pf.groups || []).find(x => x.id === groupId); if (!g) return;
+  const tickerCount = (pf.tickerTargets || []).filter(t => t.groupId === groupId).length;
+  const acctCount = S.accounts.filter(a => a.portfolioId === pfId && a.groupId === groupId).length;
+  if (!confirm(`「${g.name}」 그룹을 삭제할까요?\n속한 계좌 ${acctCount}개는 「미지정」이 되고, 이 그룹의 목표 종목 ${tickerCount}개와 리밸런싱 설정이 함께 지워집니다.`)) return;
+  pf.groups = pf.groups.filter(x => x.id !== groupId);
+  S.accounts.forEach(a => { if (a.groupId === groupId) { a.groupId = null; a.portfolioId = null; } });
+  pf.tickerTargets = (pf.tickerTargets || []).filter(t => t.groupId !== groupId);
+  if (pf.unitSettings) delete pf.unitSettings[groupId];
+  if (S.activeGroupId === groupId) { S.activeGroupId = null; S.activePortfolioId = null; }
+  pf.assetTargets = computeAssetTargetsFromTickers(pf);
   save(); renderPortfolios();
 }
 
-function addPortfolio() {
-  const name = document.getElementById('new-pf-name').value.trim();
-  if (!name) { alert('포트폴리오 이름을 입력하세요'); return; }
-  const color = document.getElementById('new-pf-color').value;
-  if (!S.portfolios) S.portfolios = [];
-  const id = 'pf_' + Date.now();
-  S.portfolios.push({ id, name, color, assetTargets:{}, tickerTargets:[] });
-  _activePfTab = id;
-  save(); renderPortfolios();
-  document.getElementById('new-pf-name').value = '';
+// ── 목표 복사 (다른 그룹의 목표로 바꾸기) ─────────────────
+function openCopyDialog(pfId, targetGid) {
+  const pf = _pf(pfId); if (!pf) return;
+  const sources = (pf.groups || []).filter(g => g.id !== targetGid).map(g => {
+    const tickers = (pf.tickerTargets || []).filter(t => t.groupId === g.id);
+    return { gid: g.id, name: g.name, tickers };
+  }).filter(s => s.tickers.length > 0);
+  if (sources.length === 0) { alert('복사할 목표가 있는 다른 그룹이 없어요.'); return; }
+  window._copySources = sources;
+  const overlay = document.createElement('div');
+  overlay.id = '_copyOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;';
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;max-width:460px;width:90%;max-height:80vh;overflow-y:auto;" onclick="event.stopPropagation()">
+      <div style="font-size:16px;font-weight:600;margin-bottom:8px;">다른 그룹에서 목표 복사</div>
+      <div style="font-size:12px;color:var(--text2);margin-bottom:14px;">고른 그룹의 목표 종목·비중으로 <b>이 그룹의 목표를 바꿉니다.</b></div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        ${sources.map((s, i) => `
+          <button class="btn" style="text-align:left;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;" onclick="doCopyTickers(${i},'${pfId}','${targetGid}')">
+            <span>${_rbH(s.name)} <span style="font-size:11px;color:var(--text3);">(${s.tickers.length}개 종목)</span></span>
+            <span style="font-size:11px;color:var(--text3);">${s.tickers.reduce((a, t) => a + (parseFloat(t.target) || 0), 0).toFixed(1)}%</span>
+          </button>`).join('')}
+      </div>
+      <div style="margin-top:16px;text-align:right;">
+        <button class="btn" onclick="document.getElementById('_copyOverlay').remove()">취소</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
 }
 
-function deletePortfolio(id) {
-  const pf = S.portfolios.find(p=>p.id===id); if(!pf) return;
-  if (!confirm(`「${pf.name}」 포트폴리오를 삭제할까요?\n연결된 계좌의 「포트폴리오」 지정도 해제됩니다.`)) return;
-  S.portfolios = S.portfolios.filter(p=>p.id!==id);
-  S.accounts.forEach(a => { if(a.portfolioId===id) a.portfolioId=null; });
-  if (S.activePortfolioId===id) S.activePortfolioId=null;
-  if (_activePfTab===id) _activePfTab=null;
+function doCopyTickers(srcIdx, pfId, targetGid) {
+  const src = window._copySources?.[srcIdx]; if (!src) return;
+  const pf = _pf(pfId); if (!pf) return;
+  const existing = (pf.tickerTargets || []).filter(t => t.groupId === targetGid).length;
+  if (existing && !confirm(`이 그룹의 목표 종목 ${existing}개를 「${src.name}」의 목표로 바꿀까요?`)) return;
+  pf.tickerTargets = (pf.tickerTargets || []).filter(t => t.groupId !== targetGid);
+  src.tickers.forEach(t => pf.tickerTargets.push({ assetId: t.assetId, ticker: t.ticker, target: t.target, groupId: targetGid }));
+  pf.assetTargets = computeAssetTargetsFromTickers(pf);
+  document.getElementById('_copyOverlay')?.remove();
   save(); renderPortfolios();
-}
-
-function selectPfTab(id) { _activePfTab=id; renderPortfolios(); }
-
-function setPfField(id, field, val) {
-  const pf = S.portfolios.find(p=>p.id===id); if(!pf) return;
-  pf[field] = val; save(); renderPortfolios();
 }
 
 // ══════════════════════════════════════════════════════════════
