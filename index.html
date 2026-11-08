@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 혼합가져오기안내</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 혼합전체반영</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -1753,15 +1753,46 @@ function addPfAccount() {
   renderAssets();
 }
 
+// ── 혼합 종목: 보유 잔고를 자산군별로 나누기 ──────────────────
+// 혼합 구성(리밸런싱 화면에서 입력, 기본 묶음의 tickerMix[종목명])이 있는 종목은 잔고를 구성 비율대로 자산군에 나눈다.
+// 없으면 그 종목의 자산군(item.assetId) 하나에 전부. 대시보드·이력의 자산군 합계가 리밸런싱 화면과 같아지도록.
+let _mixKeyCache = { sig: '', map: new Map() };
+function _mixPartsByName(name) {
+  const tm = (S.portfolios && S.portfolios[0] && S.portfolios[0].tickerMix) || null;
+  if (!tm || !name) return null;
+  let key = tm[name] ? name : null;
+  if (!key) {
+    const keys = Object.keys(tm), sig = keys.join('\u0001');
+    if (_mixKeyCache.sig !== sig) {
+      _mixKeyCache = { sig, map: new Map(keys.map(k => [String(k).replace(/\s+/g, ''), k])) };
+    }
+    key = _mixKeyCache.map.get(String(name).replace(/\s+/g, '')) || null;
+  }
+  const parts = key && tm[key] && tm[key].parts;
+  if (!parts) return null;
+  const ents = Object.entries(parts).filter(([, v]) => (parseFloat(v) || 0) > 0);
+  if (ents.length < 2) return null;
+  const sum = ents.reduce((a, [, v]) => a + parseFloat(v), 0);
+  const o = {}; ents.forEach(([k, v]) => { o[k] = parseFloat(v) / sum * 100; });
+  return o;
+}
+// 보유 항목 1원 중 assetId 자산군 몫 (0~1)
+function _itemAssetShare(it, assetId) {
+  if (!it) return 0;
+  const parts = _mixPartsByName(it.name);
+  if (parts) return (parts[assetId] || 0) / 100;
+  return it.assetId === assetId ? 1 : 0;
+}
+
 function assetBalance(month, assetId) {
   const md=S.months[month]; if(!md) return 0;
   return Object.values(md).reduce((s,acct)=>
-    s+Object.values(acct).filter(it=>it.assetId===assetId).reduce((a,it)=>a+(it.balance||0),0),0);
+    s+Object.values(acct).reduce((a,it)=>a+(it.balance||0)*_itemAssetShare(it,assetId),0),0);
 }
 function assetAdded(month, assetId) {
   const md=S.months[month]; if(!md) return 0;
   return Object.values(md).reduce((s,acct)=>
-    s+Object.values(acct).filter(it=>it.assetId===assetId).reduce((a,it)=>a+(it.added||0),0),0);
+    s+Object.values(acct).reduce((a,it)=>a+(it.added||0)*_itemAssetShare(it,assetId),0),0);
 }
 function monthDeposit(month) {
   const d = S.deposits && S.deposits[month];
@@ -2164,7 +2195,7 @@ function pfAssetBalance(month, assetId, pfId, groupId) {
   let total = 0;
   acctNos.forEach(no => {
     const ad = md[no]; if (!ad) return;
-    Object.values(ad).forEach(it => { if (it.assetId===assetId) total += (it.balance||0); });
+    Object.values(ad).forEach(it => { total += (it.balance||0) * _itemAssetShare(it, assetId); });
   });
   return total;
 }
@@ -2594,14 +2625,19 @@ function renderDashboard() {
   }
   const onlyAcctNo = acctFilterSel?.value || '';
 
+  // 목표를 자산군으로 합산 — 혼합 종목은 구성대로 나눔 (리밸런싱 화면과 같은 기준)
   const pfAssetTargets = {};
   filteredTickerTargets.forEach(t => {
+    const tg = parseFloat(t.target) || 0;
+    const parts = _mixPartsByName(t.ticker);
+    if (parts) { Object.entries(parts).forEach(([a, p]) => { pfAssetTargets[a] = (pfAssetTargets[a]||0) + tg * p / 100; }); return; }
     if (!t.assetId) return;
-    pfAssetTargets[t.assetId] = (pfAssetTargets[t.assetId]||0) + (parseFloat(t.target)||0);
+    pfAssetTargets[t.assetId] = (pfAssetTargets[t.assetId]||0) + tg;
   });
 
+  // 그룹을 골랐을 때: 목표가 있거나 잔고가 있는 자산군 (예전엔 목표 있는 것만 → 목표 없는 그룹은 빈 표)
   const showAssets = pf
-    ? S.assets.filter(a => pfAssetTargets[a.id] !== undefined)
+    ? S.assets.filter(a => pfAssetTargets[a.id] !== undefined || (month && pfAssetBalance(month, a.id, pfId, groupId) > 0))
     : S.assets;
 
   // 잔고 계산: 계좌 필터 적용
@@ -2609,7 +2645,7 @@ function renderDashboard() {
     if (onlyAcctNo) {
       const md = S.months[month]; if (!md) return 0;
       const ad = md[onlyAcctNo]; if (!ad) return 0;
-      return Object.values(ad).filter(it=>it.assetId===assetId).reduce((s,it)=>s+(it.balance||0), 0);
+      return Object.values(ad).reduce((s,it)=>s+(it.balance||0)*_itemAssetShare(it,assetId), 0);
     }
     return pfAssetBalance(month, assetId, pfId, groupId);
   }
@@ -2684,7 +2720,7 @@ function renderDashboard() {
             const md = S.months[month]; if (!md) return 0;
             return noPfAcctNos.reduce((s,no) => {
               const ad = md[no]; if (!ad) return s;
-              return s + Object.values(ad).filter(it=>it.assetId===a.id).reduce((aa,it)=>aa+(it.balance||0), 0);
+              return s + Object.values(ad).reduce((aa,it)=>aa+(it.balance||0)*_itemAssetShare(it,a.id), 0);
             }, 0);
           });
         } else if (u.unknownNos) {
@@ -2693,7 +2729,7 @@ function renderDashboard() {
             const md = S.months[month]; if (!md) return 0;
             return u.unknownNos.reduce((s,no) => {
               const ad = md[no]; if (!ad) return s;
-              return s + Object.values(ad).filter(it=>it.assetId===a.id).reduce((aa,it)=>aa+(it.balance||0), 0);
+              return s + Object.values(ad).reduce((aa,it)=>aa+(it.balance||0)*_itemAssetShare(it,a.id), 0);
             }, 0);
           });
         } else {
@@ -2710,8 +2746,11 @@ function renderDashboard() {
             const tgid = t.groupId || null;
             const matchByGroup = u.groupId === '__none' ? !tgid : (u.groupId ? tgid===u.groupId : true);
             if (!matchByGroup) return;
+            const tg = parseFloat(t.target) || 0;
+            const parts = _mixPartsByName(t.ticker); // 혼합 종목은 구성대로 나눔
+            if (parts) { Object.entries(parts).forEach(([a, p]) => { unitTargets[a] = (unitTargets[a]||0) + tg * p / 100; }); return; }
             if (!t.assetId) return;
-            unitTargets[t.assetId] = (unitTargets[t.assetId]||0) + (parseFloat(t.target)||0);
+            unitTargets[t.assetId] = (unitTargets[t.assetId]||0) + tg;
           });
         }
 
@@ -2764,14 +2803,14 @@ function renderDashboard() {
     onlyAcctNos.forEach(no => {
       const ad = (S.months[month]||{})[no]; if (!ad) return;
       Object.entries(ad).forEach(([ticker, it]) => {
-        if (!tickerMap[ticker]) tickerMap[ticker] = { name:it.name||ticker, balance:0, assetId:it.assetId };
+        if (!tickerMap[ticker]) tickerMap[ticker] = { name:it.name||ticker, balance:0, assetId:it.assetId, mix:_mixPartsByName(it.name||ticker) };
         tickerMap[ticker].balance += (it.balance||0);
       });
     });
     // 자산군별로 그룹핑해서 표시
     const tickerRows = [];
     S.assets.forEach(a => {
-      const tickers = Object.entries(tickerMap).filter(([,it]) => it.assetId === a.id);
+      const tickers = Object.entries(tickerMap).filter(([,it]) => !it.mix && it.assetId === a.id);
       if (tickers.length === 0) return;
       const assetBal = tickers.reduce((s,[,it]) => s+it.balance, 0);
       if (assetBal === 0) return;
@@ -2801,8 +2840,18 @@ function renderDashboard() {
         </tr>`);
       });
     });
+    // 혼합 종목 — 구성대로 여러 자산군에 걸쳐 있어서 따로 묶음 (자산군별 보기에서는 구성대로 나눠 합산)
+    const mixed = Object.entries(tickerMap).filter(([,it]) => it.mix && it.balance);
+    if (mixed.length > 0) {
+      const mBal = mixed.reduce((s,[,it])=>s+it.balance,0);
+      tickerRows.push(`<tr style="background:var(--surface2);"><td colspan="2"><div class="asset-cell"><span class="dot" style="background:#8B7FD1"></span><b>혼합 종목</b></div></td><td class="r"><b>${fKRWfull(mBal)}</b></td><td class="r"><b>${total>0?(mBal/total*100).toFixed(1):0}%</b></td><td class="r">-</td></tr>`);
+      mixed.sort((a,b)=>b[1].balance-a[1].balance).forEach(([ticker, it]) => {
+        const comp = Object.entries(it.mix).sort((a,b)=>b[1]-a[1]).map(([id,p])=>`${S.assets.find(a=>a.id===id)?.name||'미분류'} ${Math.round(p*10)/10}`).join(' · ');
+        tickerRows.push(`<tr><td style="padding-left:24px;font-size:12px;">${it.name||ticker}<div style="font-size:10px;color:#6A5ACD;">${comp}</div></td><td></td><td class="r">${fKRWfull(it.balance)}</td><td class="r" style="color:var(--text2);">${total>0?(it.balance/total*100).toFixed(1):0}%</td><td class="r">-</td></tr>`);
+      });
+    }
     // 자산군 미분류 종목
-    const unclassified = Object.entries(tickerMap).filter(([,it]) => !S.assets.find(a=>a.id===it.assetId));
+    const unclassified = Object.entries(tickerMap).filter(([,it]) => !it.mix && !S.assets.find(a=>a.id===it.assetId));
     if (unclassified.length > 0) {
       const ucBal = unclassified.reduce((s,[,it])=>s+it.balance,0);
       tickerRows.push(`<tr style="background:var(--surface2);"><td colspan="2"><b>미분류</b></td><td class="r"><b>${fKRWfull(ucBal)}</b></td><td class="r"><b>${total>0?(ucBal/total*100).toFixed(1):0}%</b></td><td></td></tr>`);
@@ -3632,9 +3681,9 @@ function renderStep2() {
     const mixIds = mix ? Object.keys(mix).filter(k => mix[k] > 0) : [];
     const guessed = mixIds.length > 1 ? mixIds.reduce((a, b) => (mix[b] > mix[a] ? b : a)) : autoGuessAsset(h.name);
     const mixNote = mixIds.length > 1
-      ? `<div style="font-size:10px;color:#6A5ACD;margin-top:2px;">혼합 ETF · ${mixIds.map(k => `${_aName(k)} ${mix[k]}`).join(' · ')}<br><span style="color:var(--text3);">여기선 대표 자산군만 고르면 돼요. 리밸런싱은 이 구성대로 나눠 계산해요.</span></div>`
+      ? `<div style="font-size:10px;color:var(--text3);margin-top:2px;">혼합 ETF — 대시보드·리밸런싱 모두 구성대로 나눠 계산해요</div>`
       : /혼합/.test(h.name)
-        ? `<div style="font-size:10px;color:#B05A1A;margin-top:2px;">혼합 ETF 같아요 — 여기선 비중이 가장 큰 자산군을 고르고,<br>리밸런싱 화면에서 자산군을 「혼합」으로 바꿔 구성을 넣어 주세요.</div>`
+        ? `<div style="font-size:10px;color:#B05A1A;margin-top:2px;">혼합 ETF 같아요 — 우선 비중이 가장 큰 자산군으로 두고,<br>리밸런싱 화면에서 자산군을 「혼합」으로 바꿔 구성을 넣으면 모든 화면에 반영돼요.</div>`
         : '';
     return `<tr id="irow-${ri}" style="transition:opacity .15s;">
       <td style="text-align:center;"><input type="checkbox" id="ichk-${ri}" checked onchange="toggleRow(${ri})" style="width:15px;height:15px;" /></td>
@@ -3643,9 +3692,13 @@ function renderStep2() {
       <td class="r" style="font-family:var(--mono);font-size:12px;color:${h.qty?'var(--text)':'var(--text3)'};">${h.qty ? h.qty.toLocaleString(undefined,{maximumFractionDigits:4}) : '—'}</td>
       <td class="r" style="font-family:var(--mono);font-size:12px;">${h.balance.toLocaleString()}원</td>
       <td>
-        <select id="imap-${ri}" style="font-size:12px;padding:4px 6px;width:100%;" onchange="updateSummary()">
-          ${S.assets.map(a=>`<option value="${a.id}" ${a.id===guessed?'selected':''}>${a.name}</option>`).join('')}
-        </select>
+        ${mixIds.length > 1
+          ? `<select id="imap-${ri}" style="font-size:12px;padding:4px 6px;width:100%;color:#6A5ACD;" title="혼합 구성은 리밸런싱 화면에서 바꿀 수 있어요">
+              <option value="${guessed}" selected>혼합 (${mixIds.map(k => `${_aName(k)} ${Math.round(mix[k] * 10) / 10}`).join(' · ')})</option>
+            </select>`
+          : `<select id="imap-${ri}" style="font-size:12px;padding:4px 6px;width:100%;" onchange="updateSummary()">
+              ${S.assets.map(a=>`<option value="${a.id}" ${a.id===guessed?'selected':''}>${a.name}</option>`).join('')}
+            </select>`}
       </td>
     </tr>`;
   }).join('');
