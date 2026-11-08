@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 부분리밸런싱</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 표붙여넣기</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -333,10 +333,10 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
     </label>
 
     <div style="margin-top:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-      <span style="font-size:12px;color:var(--text3);">파일이 안 열리면</span>
-      <button class="btn-sm" onclick="document.getElementById('csv-paste').style.display='block';document.getElementById('csv-paste-actions').style.display='flex';document.getElementById('csv-paste').focus();">CSV 내용 직접 붙여넣기</button>
+      <span style="font-size:12px;color:var(--text3);">파일이 없거나 안 열리면</span>
+      <button class="btn-sm" onclick="document.getElementById('csv-paste').style.display='block';document.getElementById('csv-paste-actions').style.display='flex';document.getElementById('csv-paste').focus();">📋 홈페이지 표 / CSV 내용 붙여넣기</button>
     </div>
-    <textarea id="csv-paste" rows="4" placeholder="CSV 내용 붙여넣기..."
+    <textarea id="csv-paste" rows="4" placeholder="증권사 홈페이지 잔고 표(예: 미래에셋 「상품보유현황」)를 계좌번호 줄부터 마지막 종목까지 드래그해서 복사(Ctrl+C) → 여기에 붙여넣기(Ctrl+V) → 분석. CSV 내용을 붙여넣어도 돼요."
       style="width:100%;margin-top:8px;font-family:var(--mono);font-size:12px;padding:8px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);color:var(--text);resize:vertical;display:none;"></textarea>
     <div id="csv-paste-actions" style="margin-top:8px;display:none;gap:8px;">
       <button class="btn btn-primary btn-sm" onclick="parseAndRender()">분석</button>
@@ -3339,9 +3339,77 @@ function parseCSVLine(line) {
   res.push(cur.trim()); return res;
 }
 
+// ── 증권사 홈페이지 표 복사·붙여넣기 (탭 구분) ─────────────────
+// 예: 미래에셋 홈페이지 「상품보유현황」 표를 드래그해 복사 → 붙여넣기
+//   [010-3123-0173-0]
+//   상품명  보유수량  현재가  평균매입가  매입금액  평가금액  평가손익  손익률
+//   KODEX 200  308.00  79,005  48,908  15,063,936  24,333,540  9,269,604  61.54%
+// 처리하면 true. 표 머리글(상품명/종목명 + 평가금액)이 없으면 false → 기존 CSV 해석으로.
+function _tryWebTablePaste(raw) {
+  const lines = raw.split(/\r?\n/);
+  const cellsOf = l => l.split('\t').map(c => c.trim());
+  const hi = lines.findIndex(l => l.includes('\t') && /상품명|종목명/.test(l) && /평가금액|평가액/.test(l));
+  if (hi < 0) return false;
+  const head = cellsOf(lines[hi]);
+  const col = re => head.findIndex(h => re.test(h));
+  const nameI = col(/상품명|종목명/), amtI = col(/평가금액|평가액/);
+  const qtyI = col(/보유수량|보유량|잔고수량|수량/), curI = col(/^현재가$/), avgI = col(/평균매입가|평균단가|매입단가/);
+
+  // 계좌번호: 표 위에 [010-3123-0173-0] 처럼 붙어 오면 사용, 없으면 「기본 계좌번호」
+  let acctNo = '';
+  const m = raw.match(/(\d{3}-\d{2,4}-\d{4,}(?:-\d)?)/);
+  if (m) {
+    const norm = normalizeAcctNo(m[1]);
+    const dg = String(norm).replace(/\D/g, '');
+    const hitA = S.accounts.find(a => { const d = String(a.acctNo).replace(/\D/g, ''); return d && (d === dg || dg.startsWith(d) || d.startsWith(dg)); });
+    acctNo = hitA ? hitA.acctNo : norm;
+  }
+  if (!acctNo) {
+    const def = (document.getElementById('import-default-acct')?.value || '').trim();
+    if (!def) { showAcctNoPrompt(() => parseAndRender()); return true; }
+    acctNo = normalizeAcctNo(def);
+  }
+
+  // 같은 계좌의 이전 기록과 같은 종목이면 그 이름·키를 그대로 (띄어쓰기 차이 무시)
+  const squash = t => String(t || '').replace(/\s+/g, '');
+  const known = new Map();
+  sortedMonths().forEach(mo => {
+    Object.entries((S.months[mo] || {})[acctNo] || {}).forEach(([k, it]) => {
+      if (k === MANUAL_MONTH_KEY || !it) return;
+      known.set(squash(it.name || k), { key: k, name: it.name || k });
+    });
+  });
+  collectAllTickers().forEach(t => { if (!known.has(squash(t))) known.set(squash(t), { key: t, name: t }); });
+
+  const holdings = [];
+  let pending = ''; // 셀 안 줄바꿈으로 종목명이 다음 줄로 넘어온 경우
+  for (let i = hi + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) continue;
+    const cells = cellsOf(line);
+    if (cells.length < Math.max(nameI, amtI) + 1) { pending += cells.join(''); continue; }
+    if (pending) { cells[nameI] = pending + cells[nameI]; pending = ''; }
+    const name = cells[nameI];
+    const balance = cleanNum(cells[amtI]);
+    if (!name || /합계|총계|소계/.test(name) || balance <= 0) continue;
+    const hit = known.get(squash(name));
+    holdings.push({
+      acctNo, ticker: hit ? hit.key : name, name: hit ? hit.name : name, balance,
+      qty: qtyI >= 0 ? cleanNum(cells[qtyI]) : 0,
+      avgPrice: avgI >= 0 ? cleanNum(cells[avgI]) : 0,
+      currentPrice: curI >= 0 ? cleanNum(cells[curI]) : 0,
+    });
+  }
+  if (!holdings.length) { alert('표는 인식했지만 평가금액이 있는 종목이 없어요.'); return true; }
+  _parsed = holdings;
+  renderStep2();
+  return true;
+}
+
 function parseAndRender() {
   const raw=document.getElementById('csv-paste').value.trim();
   if(!raw){alert('CSV 내용을 입력하세요');return;}
+  if (raw.includes('\t') && _tryWebTablePaste(raw)) return; // 홈페이지 표 복사·붙여넣기
   const lines=raw.split(/\r?\n/);
   const acctPat=/^\d{3}-\d{2,4}-\d{4,}/;
   const defaultAcct = (document.getElementById('import-default-acct')?.value || '').trim();
