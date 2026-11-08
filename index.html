@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 혼합전체반영</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 위험알림분리</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -4450,7 +4450,8 @@ const REB_DEFAULTS = {
   trigRel: 30,        // 상대 편차 기준 (목표 대비 %). 0 = 끔
   trigMonths: 0,      // 마지막 리밸런싱 후 N개월. 0 = 끔
   refGroup: '',       // 자산 비율을 따라갈 그룹 id (IRP 처럼 종목은 다르지만 비율은 같게)
-  riskCap: 0,         // 위험자산 한도 (%). 0 = 끔
+  riskCap: 0,         // 위험자산 한도 (%) — 리밸런싱 목표를 계산할 때 쓰는 값(여유를 두고 실제 한도보다 낮게). 0 = 끔
+  riskAlert: 70,      // 「리밸런싱 필요」 알림용 위험자산 기준 (%) — 현재 비중이 이걸 넘으면 알림. 기본 = 퇴직연금 법정 한도 70%. 0 = 끔
 };
 
 function _rbH(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -4686,7 +4687,7 @@ function rebSignal(m) {
   }
   if (st.riskCap > 0) {
     if (m.riskTgt > st.riskCap + 0.05) reasons.push({ text: `목표의 위험자산 비중 ${m.riskTgt.toFixed(1)}%가 한도 ${st.riskCap}%를 넘어요` });
-    if (m.riskCur > st.riskCap + 0.05) reasons.push({ text: `현재 위험자산 비중 ${m.riskCur.toFixed(1)}%가 한도 ${st.riskCap}%를 넘어요` });
+    if (st.riskAlert > 0 && m.riskCur > st.riskAlert + 0.05) reasons.push({ text: `현재 위험자산 비중 ${m.riskCur.toFixed(1)}%가 알림 기준 ${st.riskAlert}%를 넘어요` });
   }
 
   const raw = m.pf.unitSettings?.[m.unitId] || {};
@@ -5002,10 +5003,10 @@ function _assetPanelHtml(m) {
       <td class="r" style="font-size:11px;color:var(--text3);">${(() => { const h = rebBand(e.target, st); return h == null || !(e.target > 0) ? '-' : `${Math.max(0, e.target - h).toFixed(1)} ~ ${(e.target + h).toFixed(1)}`; })()}</td>
       ${m.ref ? `<td class="r">${pct(e.ref || 0)}</td><td class="r">${diffChip(e.target - (e.ref || 0))}</td>` : ''}
     </tr>`).join('');
-  const capCell = v => st.riskCap > 0 ? (v > st.riskCap + 0.05 ? `<span style="color:var(--neg);font-weight:600;">${pct(v)}</span>` : pct(v)) : pct(v);
+  const capCell = (v, lim) => lim > 0 && v > lim + 0.05 ? `<span style="color:var(--neg);font-weight:600;">${pct(v)}</span>` : pct(v);
   const riskRow = `<tr style="border-top:2px solid var(--border);">
-      <td style="font-size:12px;font-weight:600;">위험자산 합계${st.riskCap > 0 ? ` <span style="font-weight:400;color:var(--text3);">(한도 ${st.riskCap}%)</span>` : ''}</td>
-      <td class="r">${capCell(m.riskCur)}</td><td class="r" style="font-weight:600;">${capCell(m.riskTgt)}</td><td></td>
+      <td style="font-size:12px;font-weight:600;">위험자산 합계${st.riskCap > 0 ? ` <span style="font-weight:400;color:var(--text3);">(목표 계산 ${st.riskCap}%${st.riskAlert > 0 ? ` · 알림 ${st.riskAlert}%` : ''})</span>` : ''}</td>
+      <td class="r">${capCell(m.riskCur, st.riskCap > 0 ? st.riskAlert : 0)}</td><td class="r" style="font-weight:600;">${capCell(m.riskTgt, st.riskCap)}</td><td></td>
       ${m.ref ? '<td></td><td></td>' : ''}</tr>`;
   const refSum = m.ref ? Object.values(m.ref.T).reduce((s, v) => s + v, 0) : 100;
   return `<div style="margin-top:14px;padding:12px 14px;border:1px solid var(--border2);border-radius:var(--radius);">
@@ -5324,8 +5325,10 @@ function renderRebUnit(pf, unit, m) {
           <option value="">— 없음 (이 그룹 목표 그대로) —</option>
           ${(pf.groups || []).filter(g => g.id !== unit.id).map(g => `<option value="${g.id}" ${st.refGroup === g.id ? 'selected' : ''}>${_rbH(g.name)}</option>`).join('')}
         </select></label>
-      <label style="display:flex;align-items:center;gap:4px;white-space:nowrap;" title="IRP·DC 등 위험자산 투자 한도. 0이면 끔">위험자산 한도
+      <label style="display:flex;align-items:center;gap:4px;white-space:nowrap;" title="리밸런싱 목표를 계산할 때 쓰는 위험자산 한도. 시세가 올라도 실제 한도를 넘지 않게 여유를 두고 낮게(예: 63). 0이면 끔">위험자산 한도 (목표 계산용)
         <input type="number" min="0" max="100" step="1" value="${st.riskCap || 0}" onchange="setUnitSetting('${pf.id}','${unit.id}','riskCap',Math.max(0,Math.min(100,parseFloat(this.value)||0)))" style="width:56px;text-align:right;padding:3px 6px;font-size:12px;" />%</label>
+      ${st.riskCap > 0 ? `<label style="display:flex;align-items:center;gap:4px;white-space:nowrap;" title="현재 위험자산 비중이 이 값을 넘으면 「리밸런싱 필요」로 알려줘요. 기본은 퇴직연금 법정 한도 70%. 0이면 끔">알림 기준
+        <input type="number" min="0" max="100" step="1" value="${st.riskAlert || 0}" onchange="setUnitSetting('${pf.id}','${unit.id}','riskAlert',Math.max(0,Math.min(100,parseFloat(this.value)||0)))" style="width:56px;text-align:right;padding:3px 6px;font-size:12px;" />%</label>` : ''}
     </div>
 
     ${m.view.length === 0
