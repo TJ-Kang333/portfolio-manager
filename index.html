@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 한도선택</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 부분리밸런싱</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -173,6 +173,8 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
     <label>그룹</label>
     <select id="dash-group" class="month-select" onchange="setActiveGroup(this.value)" style="font-size:12px;padding:4px 8px;"></select>
   </div>
+  <!-- 리밸런싱 필요 알림 -->
+  <div id="dash-reb-alert"></div>
   <!-- 0) 순자산 — 가계부(은행/카드/대출) + 주식 + 코인 전체 합산 -->
   <div class="card" style="margin-bottom:14px;">
     <div class="card-head"><span class="card-title">순자산</span>
@@ -2452,6 +2454,7 @@ function renderSnapshotTrend(){
 
 function renderDashboard() {
   _flatCheck();
+  try { renderRebAlert(); } catch (e) { console.warn('renderRebAlert', e); }
   renderNetWorth();
   loadSnapshotTrend(false);
   const ms=sortedMonths();
@@ -4305,9 +4308,9 @@ const REB_DEFAULTS = {
   mode: 'full',       // full = 사고팔아 목표로 / nosell = 매도 없이 추가 입금으로만
   tradeBand: 0.5,     // 매매 생략 범위 (±%p) — 이 안이면 "유지"
   showQty: true,      // 현재가가 있으면 수량 표시
-  trigLevel: 'ticker',// 리밸런싱 필요 판단 단위: ticker | asset
+  trigLevel: 'asset', // 리밸런싱 필요 판단 단위: ticker | asset
   trigAbs: 5,         // 절대 편차 기준 (%p). 0 = 끔
-  trigRel: 25,        // 상대 편차 기준 (목표 대비 %). 0 = 끔
+  trigRel: 30,        // 상대 편차 기준 (목표 대비 %). 0 = 끔
   trigMonths: 0,      // 마지막 리밸런싱 후 N개월. 0 = 끔
   refGroup: '',       // 자산 비율을 따라갈 그룹 id (IRP 처럼 종목은 다르지만 비율은 같게)
   riskCap: 0,         // 위험자산 한도 (%). 0 = 끔
@@ -4442,6 +4445,10 @@ function buildRebModel(pf, unitId) {
       const left = cash - Math.min(cash, sumShort);
       if (left > 0 && sumT > 0) rows.forEach(r => { r.trade += left * r.target / sumT; });
     }
+  } else if (st.mode === 'partial') {
+    const res = partialRebTrades(rows, base, st);
+    if (res.note) note = res.note;
+    rows.forEach((r, k) => { r.trade = Math.abs(res.trades[k]) >= 1 ? res.trades[k] : 0; });
   } else {
     rows.forEach(r => {
       const raw = r.tgtAmt - r.cur;
@@ -4623,6 +4630,62 @@ function lookThroughAssets(rows, total, refT) {
     .sort((a, b) => (order.indexOf(a.assetId) + 1 || 999) - (order.indexOf(b.assetId) + 1 || 999));
 }
 
+// 허용 범위(리밸런싱 필요 기준) 반폭 — 절대·상대 중 좁은 쪽. 둘 다 꺼져 있으면 null
+function rebBand(target, st) {
+  const c = [];
+  if (st.trigAbs > 0) c.push(st.trigAbs);
+  if (st.trigRel > 0 && target > 0) c.push(target * st.trigRel / 100);
+  return c.length ? Math.min(...c) : null;
+}
+
+// 부분 리밸런싱: 허용 범위를 벗어난 것(자산군별 판단이면 자산군, 아니면 종목)만 범위 끝(살짝 안쪽)까지 되돌린다.
+// 나머지는 지금 금액에서 가장 적게 움직이도록(추가 입금이 있으면 목표 비중대로 나눠 담음). 모든 계산은 기준 총액 대비 %.
+function partialRebTrades(rows, base, st) {
+  const n = rows.length;
+  const zero = { trades: rows.map(() => 0) };
+  if (!n || base <= 0) return zero;
+  if (!(st.trigAbs > 0) && !(st.trigRel > 0)) return { ...zero, note: '「리밸런싱 필요 기준」의 절대·상대 편차가 모두 꺼져 있어서 부분 리밸런싱을 할 수 없어요.' };
+  const c = rows.map(r => r.cur / base * 100);
+  // 판단 단위
+  let units;
+  if (st.trigLevel === 'asset') {
+    const ids = [...new Set(rows.flatMap(r => Object.keys(r.mix)))];
+    units = ids.map(a => {
+      const coef = rows.map(r => (r.mix[a] || 0) / 100);
+      const t = rows.reduce((s, r, k) => s + r.target * coef[k], 0);
+      return { coef, t };
+    });
+  } else {
+    units = rows.map((r, k) => ({ coef: rows.map((_, j) => (j === k ? 1 : 0)), t: r.target }));
+  }
+  units.forEach(u => { u.h = rebBand(u.t, st); });
+  const W = 1000;
+  const wt = rows.map(r => 1 / Math.sqrt(Math.max(r.target, 1))); // 입금·조정분은 목표 비중이 큰 종목에 더
+  const active = new Map();
+  let x = c.slice();
+  const pctOf = (u, v) => u.coef.reduce((s, cf, k) => s + cf * v[k], 0);
+  const solve = () => {
+    const A = [], b = [];
+    A.push(rows.map(() => W)); b.push(W * 100);
+    active.forEach((edge, ui) => { A.push(units[ui].coef.map(cf => W * cf)); b.push(W * edge); });
+    rows.forEach((_, k) => { A.push(rows.map((__, j) => (j === k ? wt[k] : 0))); b.push(wt[k] * c[k]); });
+    return _nnls(A, b);
+  };
+  if (Math.abs(c.reduce((s, v) => s + v, 0) - 100) > 0.01) x = solve(); // 추가 입금/출금이 있으면 먼저 나눠 담기
+  for (let iter = 0; iter < 12; iter++) {
+    let added = false;
+    units.forEach((u, ui) => {
+      if (u.h == null || active.has(ui)) return;
+      const p = pctOf(u, x);
+      if (p > u.t + u.h + 0.01) { active.set(ui, u.t + u.h * 0.98); added = true; }
+      else if (p < u.t - u.h - 0.01) { active.set(ui, Math.max(0, u.t - u.h * 0.98)); added = true; }
+    });
+    if (!added) break;
+    x = solve();
+  }
+  return { trades: x.map((v, k) => (v - c[k]) / 100 * base) };
+}
+
 // 음수 없는 최소제곱 (Lawson–Hanson) — 종목 몇 개짜리 작은 문제용
 function _nnls(A, b) {
   const m = A.length, n = A[0].length;
@@ -4799,12 +4862,13 @@ function _assetPanelHtml(m) {
         ${isRiskyAssetId(e.assetId) ? '<span style="font-size:10px;color:var(--text3);">위험</span>' : ''}</div></td>
       <td class="r">${pct(e.curPct)}</td>
       <td class="r" style="font-weight:600;">${pct(e.target)}</td>
+      <td class="r" style="font-size:11px;color:var(--text3);">${(() => { const h = rebBand(e.target, st); return h == null || !(e.target > 0) ? '-' : `${Math.max(0, e.target - h).toFixed(1)} ~ ${(e.target + h).toFixed(1)}`; })()}</td>
       ${m.ref ? `<td class="r">${pct(e.ref || 0)}</td><td class="r">${diffChip(e.target - (e.ref || 0))}</td>` : ''}
     </tr>`).join('');
   const capCell = v => st.riskCap > 0 ? (v > st.riskCap + 0.05 ? `<span style="color:var(--neg);font-weight:600;">${pct(v)}</span>` : pct(v)) : pct(v);
   const riskRow = `<tr style="border-top:2px solid var(--border);">
       <td style="font-size:12px;font-weight:600;">위험자산 합계${st.riskCap > 0 ? ` <span style="font-weight:400;color:var(--text3);">(한도 ${st.riskCap}%)</span>` : ''}</td>
-      <td class="r">${capCell(m.riskCur)}</td><td class="r" style="font-weight:600;">${capCell(m.riskTgt)}</td>
+      <td class="r">${capCell(m.riskCur)}</td><td class="r" style="font-weight:600;">${capCell(m.riskTgt)}</td><td></td>
       ${m.ref ? '<td></td><td></td>' : ''}</tr>`;
   const refSum = m.ref ? Object.values(m.ref.T).reduce((s, v) => s + v, 0) : 100;
   return `<div style="margin-top:14px;padding:12px 14px;border:1px solid var(--border2);border-radius:var(--radius);">
@@ -4813,7 +4877,7 @@ function _assetPanelHtml(m) {
       ${m.ref ? `<button class="btn btn-primary" style="padding:6px 12px;font-size:12px;" onclick="rebAutoFit()">⚖ 「${_rbH(m.ref.name)}」 비율에 맞춰 목표 자동 계산</button>` : ''}
     </div>
     <div style="overflow-x:auto;"><table style="min-width:420px;">
-      <thead><tr><th>자산군</th><th class="r">현재</th><th class="r">이 그룹 목표</th>
+      <thead><tr><th>자산군</th><th class="r">현재</th><th class="r">이 그룹 목표</th><th class="r">허용 범위</th>
         ${m.ref ? `<th class="r">기준: ${_rbH(m.ref.name)}</th><th class="r">목표 − 기준</th>` : ''}</tr></thead>
       <tbody>${rows}${riskRow}</tbody>
     </table></div>
@@ -5108,9 +5172,11 @@ function renderRebUnit(pf, unit, m) {
     <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:var(--text2);">
       <label style="display:flex;align-items:center;gap:6px;white-space:nowrap;">매매 방식
         <select onchange="setUnitSetting('${pf.id}','${unit.id}','mode',this.value)" style="font-size:12px;padding:4px 6px;">
-          <option value="full" ${st.mode === 'full' ? 'selected' : ''}>전체 리밸런싱 (사고팔기)</option>
+          <option value="full" ${st.mode === 'full' ? 'selected' : ''}>전체 리밸런싱 (목표까지)</option>
+          <option value="partial" ${st.mode === 'partial' ? 'selected' : ''}>부분 리밸런싱 (허용 범위 안까지만)</option>
           <option value="nosell" ${st.mode === 'nosell' ? 'selected' : ''}>매도 없이 (추가 입금으로만)</option>
         </select></label>
+      ${st.mode === 'partial' ? `<span style="font-size:11px;color:var(--text3);">「리밸런싱 필요 기준」을 넘은 ${st.trigLevel === 'asset' ? '자산군' : '종목'}만 허용 범위 끝까지 되돌려요</span>` : ''}
       ${st.mode === 'full' ? `<label style="display:flex;align-items:center;gap:4px;" title="목표와의 차이가 이 범위 안이면 매매하지 않고 유지">매매 생략 범위 ±
         <input type="number" min="0" step="0.1" value="${st.tradeBand}" onchange="setUnitSetting('${pf.id}','${unit.id}','tradeBand',Math.max(0,parseFloat(this.value)||0))" style="width:56px;text-align:right;padding:3px 6px;font-size:12px;" />%p</label>` : ''}
       <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" ${st.showQty ? 'checked' : ''} onchange="setUnitSetting('${pf.id}','${unit.id}','showQty',this.checked)" /> 수량 표시 (현재가 있는 종목)</label>
@@ -5174,7 +5240,8 @@ function renderRebUnit(pf, unit, m) {
         <input type="number" min="0" step="1" value="${st.trigMonths}" onchange="setUnitSetting('${pf.id}','${unit.id}','trigMonths',Math.max(0,parseInt(this.value)||0))" style="width:56px;text-align:right;padding:3px 6px;font-size:12px;" />개월</label>
     </div>
     <div style="margin-top:10px;font-size:11px;color:var(--text3);line-height:1.7;">
-      절대 편차는 비중이 큰 자산에, 상대 편차는 비중이 작은 자산에 잘 맞아요 (흔히 쓰는 「5/25 규칙」이 기본값).
+      절대 편차는 비중이 큰 자산에, 상대 편차는 비중이 작은 자산에 잘 맞아요. 둘 중 좁은 쪽이 허용 범위가 돼요 (기본: 자산군별 · ±5%p · ±30%).
+      「부분 리밸런싱」은 이 허용 범위를 벗어난 것만 범위 안까지 되돌려요.
       목표 비중을 바꾸면 마지막 완료 기록과 비교해서 알려줘요.
     </div>
   </div>`;
@@ -5317,6 +5384,21 @@ function linkUnitAccount(pfId, unitId, ai, checked) {
   try { renderDashboard(); } catch (e) {}
 }
 
+// 대시보드 맨 위: 「리밸런싱 필요」 그룹 알림
+function renderRebAlert() {
+  const el = document.getElementById('dash-reb-alert'); if (!el) return;
+  const pf = _mainPf();
+  const need = pf ? pfUnits(pf).map(u => ({ u, m: buildRebModel(pf, u.id) })).filter(x => x.m.signal.state === 'need') : [];
+  if (!need.length) { el.innerHTML = ''; return; }
+  el.innerHTML = `<div class="card" style="margin-bottom:14px;border-color:var(--neg);background:var(--neg-bg);">
+    <div style="font-size:13px;font-weight:600;color:var(--neg);margin-bottom:6px;">⚠ 리밸런싱 필요 — ${need.length}개 그룹</div>
+    ${need.map(({ u, m }) => `<div style="font-size:12px;color:var(--text2);padding:3px 0;">
+      <a href="#" onclick="_activeUnit['${pf.id}']='${u.id}';showPage('portfolios');return false;" style="color:var(--neg);font-weight:600;text-decoration:none;">${_rbH(u.name)} →</a>
+      ${_rbH(m.signal.reasons[0]?.text || '')}${m.signal.reasons.length > 1 ? ` <span style="color:var(--text3);">외 ${m.signal.reasons.length - 1}건</span>` : ''}
+    </div>`).join('')}
+  </div>`;
+}
+
 function selectPfUnit(pfId, unitId) { _activeUnit[pfId] = unitId; renderPortfolios(); }
 
 // 보유했던 모든 종목명 풀 (자동완성용)
@@ -5432,6 +5514,16 @@ function ensureFlatGroups() {
       a.portfolioId = null; a.groupId = null; changed = true;
     }
   });
+  // 리밸런싱 필요 기준 v2 (사용자 결정): 자산군별 판단 + 상대 편차 30% — 기존 그룹에 한 번만 적용
+  if ((main.rebCriteriaV || 0) < 2) {
+    if (!main.unitSettings) main.unitSettings = {};
+    main.groups.forEach(g => {
+      const us = main.unitSettings[g.id] || (main.unitSettings[g.id] = {});
+      us.trigLevel = 'asset'; us.trigRel = 30;
+    });
+    main.rebCriteriaV = 2;
+    changed = true;
+  }
   if (changed) main.assetTargets = computeAssetTargetsFromTickers(main);
   return changed;
 }
