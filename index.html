@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 표붙여넣기</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 혼합가져오기안내</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -3618,11 +3618,27 @@ function renderStep2() {
     </tbody></table>
   `;
 
+  // 혼합 ETF: 리밸런싱 화면에서 넣은 구성(pf.tickerMix, 종목명 기준)이 있으면 대표 자산군을 미리 고르고 안내
+  const _mpf = _mainPf();
+  const _sq = t => String(t || '').replace(/\s+/g, '');
+  const _mixOf = name => {
+    const tm = _mpf?.tickerMix || {};
+    const k = Object.keys(tm).find(x => _sq(x) === _sq(name));
+    return k ? tm[k].parts : null;
+  };
+  const _aName = id => S.assets.find(a => a.id === id)?.name || '미분류';
   document.getElementById('import-rows').innerHTML=_parsed.map((h,ri)=>{
-    const guessed=autoGuessAsset(h.name);
+    const mix = _mixOf(h.name);
+    const mixIds = mix ? Object.keys(mix).filter(k => mix[k] > 0) : [];
+    const guessed = mixIds.length > 1 ? mixIds.reduce((a, b) => (mix[b] > mix[a] ? b : a)) : autoGuessAsset(h.name);
+    const mixNote = mixIds.length > 1
+      ? `<div style="font-size:10px;color:#6A5ACD;margin-top:2px;">혼합 ETF · ${mixIds.map(k => `${_aName(k)} ${mix[k]}`).join(' · ')}<br><span style="color:var(--text3);">여기선 대표 자산군만 고르면 돼요. 리밸런싱은 이 구성대로 나눠 계산해요.</span></div>`
+      : /혼합/.test(h.name)
+        ? `<div style="font-size:10px;color:#B05A1A;margin-top:2px;">혼합 ETF 같아요 — 여기선 비중이 가장 큰 자산군을 고르고,<br>리밸런싱 화면에서 자산군을 「혼합」으로 바꿔 구성을 넣어 주세요.</div>`
+        : '';
     return `<tr id="irow-${ri}" style="transition:opacity .15s;">
       <td style="text-align:center;"><input type="checkbox" id="ichk-${ri}" checked onchange="toggleRow(${ri})" style="width:15px;height:15px;" /></td>
-      <td style="font-size:12px;max-width:200px;">${h.name}</td>
+      <td style="font-size:12px;max-width:240px;">${h.name}${mixNote}</td>
       <td style="font-size:11px;font-family:var(--mono);color:var(--text3);">${h.acctNo}</td>
       <td class="r" style="font-family:var(--mono);font-size:12px;color:${h.qty?'var(--text)':'var(--text3)'};">${h.qty ? h.qty.toLocaleString(undefined,{maximumFractionDigits:4}) : '—'}</td>
       <td class="r" style="font-family:var(--mono);font-size:12px;">${h.balance.toLocaleString()}원</td>
