@@ -23,5 +23,5 @@
 
 ## 문자 자동 수집 (MacroDroid)
 
-결제 문자/알림 → MacroDroid HTTP 요청 → `<웹앱URL>?action=ingest&source=<hyundai|gyeonggi>`
+결제 문자/알림 → MacroDroid HTTP 요청 → `<웹앱URL>?action=ingest&source=<hyundai|samsung|lotte|gyeonggi|woori|hana_bank|hana_card>`
 → 파서가 `가계부거래` 시트에 적재 → 앱이 자동 반영.

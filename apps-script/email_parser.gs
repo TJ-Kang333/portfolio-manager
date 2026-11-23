@@ -205,6 +205,7 @@ function normalizeSourceHint(s) {
   s = String(s || '').toLowerCase().trim();
   if (!s) return '';
   if (/samsung|삼성/.test(s))                      return 'samsung';
+  if (/lotte|롯데/.test(s))                        return 'lotte';
   if (/hyundai|현대카드/.test(s))                 return 'hyundai';
   if (/gyeonggi|경기|지역화폐|사랑화폐/.test(s))  return 'gyeonggi';
   if (/hana.?card|하나카드/.test(s))               return 'hana_card';
@@ -285,6 +286,18 @@ const ALERT_PARSERS = [
     srcKey: 'samsung',
     match: t => /삼성\s*\d{4}\s*(해외)?\s*(승인|취소)/.test(t) || (/삼성카드/.test(t) && /(승인|취소)/.test(t)),
     parse: (t, msgDate) => parseSamsungCard(t, msgDate),
+  },
+
+  // ── 롯데카드 승인/취소 문자 ─────────────────────────────
+  //  [문자] [Web발신] 주식회사 웹빙신선시흥 / 11,980원 승인 / 강*준 로카 스페셜SE 1*2* / 일시불 11/23 17:35 / 누적 11,980원
+  //  삼성카드와 달리 가맹점이 금액 "앞"에 온다. 본문엔 "롯데"가 없고 문자 발신자(=알림 제목)가 "롯데카드".
+  //  가맹점이 "현대백화점"이면 현대카드 파서도 반응할 수 있어 현대카드보다 먼저 검사하고,
+  //  MacroDroid URL 에 &source=lotte 를 붙이면 확실하게 이 파서로 온다.
+  {
+    name: '롯데카드',
+    srcKey: 'lotte',
+    match: t => /롯데카드/.test(t) && /[\d,]+\s*원\s*(승인|취소)/.test(t),
+    parse: (t, msgDate) => parseLotteCard(t, msgDate),
   },
 
   // ── 현대카드 승인/취소 — 문자·앱 알림 두 형식 다 지원 ──────
@@ -518,6 +531,43 @@ function parseSamsungCard(t, msgDate) {
   return null;
 }
 
+// 롯데카드 문자 파서:
+//  금액 = "N원 승인/취소" 줄, 가맹점 = 그 줄 바로 앞의 내용 있는 줄("[Web발신]" 머리말은 떼고),
+//  날짜·시각 = "M/D HH:MM". 문자 앱 알림으로 받을 때 제목("롯데카드")·본문·큰 본문이 겹쳐 와도
+//  첫 번째 "N원 승인" 기준으로 읽으니 영향 없음. "누적"은 삼성카드처럼 카드 잔액 기준점으로 쓰지 않는다.
+function parseLotteCard(t, msgDate) {
+  if (/승인\s*거절|결제\s*실패|한도\s*초과/.test(t)) return { skip: true };
+  const lines = t.split('\n').map(s => s.replace(/\[?Web발신\]?/g, '').trim()).filter(Boolean);
+  const amtRe = /([\d,]+)\s*원\s*(승인|취소)/;
+  const ai = lines.findIndex(l => amtRe.test(l));
+  const dm = t.match(/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+  const date = dm ? resolveDate(parseInt(dm[1], 10), parseInt(dm[2], 10), msgDate)
+                   : Utilities.formatDate(msgDate || new Date(), 'Asia/Seoul', 'yyyy-MM-dd');
+  const isBoiler = l => !/[가-힣A-Za-z]/.test(l) || /^롯데\s*카드/.test(l) || /^(알림|승인\s*안내)$/.test(l) ||
+    /[\d,]+\s*원/.test(l) || /누적/.test(l) || /^(일시불|할부)/.test(l) || /^[가-힣]\*[가-힣]/.test(l);
+
+  if (ai >= 0) {
+    const m = lines[ai].match(amtRe);
+    const isCancel = m[2] === '취소' || /취소/.test(lines[ai]);
+    // 같은 줄에 가맹점이 붙어 오는 경우("웹빙신선시흥 11,980원 승인")도 대비
+    let merchant = lines[ai].slice(0, lines[ai].indexOf(m[0])).trim();
+    if (!merchant) for (let i = ai - 1; i >= 0; i--) { if (!isBoiler(lines[i])) { merchant = lines[i]; break; } }
+    return { type: isCancel ? 'income' : 'expense', amount: parseInt(m[1].replace(/,/g, ''), 10),
+             merchant, source: '롯데카드', date, balance: null };
+  }
+  // 해외승인 등 원화 없이 외화로 온 경우 — 외화 금액만 남기고 0원으로 기록(현대·삼성카드와 같은 방식)
+  const fx = t.match(/([A-Z]{3})\s*([\d,]+(?:\.\d+)?)\s*(?:해외)?\s*(승인|취소)/);
+  if (fx) {
+    const fi = lines.findIndex(l => l.includes(fx[0]) || (l.includes(fx[1]) && /(승인|취소)/.test(l)));
+    let merchant = '';
+    for (let i = fi - 1; i >= 0; i--) { if (!isBoiler(lines[i]) && !/^[A-Z]{3}\s*[\d,.]+/.test(lines[i])) { merchant = lines[i]; break; } }
+    return { type: fx[3] === '취소' ? 'income' : 'expense', amount: 0, forceAccept: true,
+             merchant: (merchant || '해외결제') + ' (' + fx[1] + ' ' + fx[2] + ', 환전 전)',
+             source: '롯데카드', date, balance: null };
+  }
+  return null;
+}
+
 // 우리은행/하나은행 공용 파서 — 배열 순서(금액↔유형)가 은행마다 달라 순서 무관 정규식으로 처리
 function parseBankAlert(t, msgDate, sourceLabel) {
   // 방향 판정: [입금]/[출금] 대괄호 형태 우선.
@@ -707,6 +757,23 @@ function _testParser() {
     삼성카드_취소: '[Web발신]\n삼성1234취소 홍*동 15,000원 일시불 10/16 12:40 스타벅스',
     삼성카드_해외: '[Web발신]\n삼성1234해외승인 홍*동 USD 12.34 10/16 12:34 AMAZON.COM',
     삼성카드_광고: '(광고) 삼성카드 10월 혜택 안내 승인 시 5,000원 캐시백',
+    // ── 롯데카드 문자 ──
+    // 실제 문자 (2026-11-23, 메시지 앱 알림 화면): 제목 "롯데카드"
+    롯데카드_승인_실제: [
+      '롯데카드', '[Web발신]', '주식회사 웹빙신선시흥', '11,980원 승인', '강*준 로카 스페셜SE 1*2*', '일시불 11/23 17:35', '누적 11,980원',
+    ].join('\n'),
+    // 알림이 "[Web발신] 가맹점"을 한 줄로 붙여 오고, 제목/본문/큰 본문이 겹쳐 오는 경우
+    롯데카드_알림_겹침: [
+      '롯데카드', '[Web발신] 주식회사 웹빙신선시흥 11,980원 승인 강*준 로카 스페셜SE 1*2* 일시불 11/23 17:35 누적 11,980원',
+      '[Web발신] 주식회사 웹빙신선시흥', '11,980원 승인', '강*준 로카 스페셜SE 1*2*', '일시불 11/23 17:35', '누적 11,980원',
+    ].join('\n'),
+    // 힌트 없이(이메일 경로) 가맹점이 "현대백화점"이어도 현대카드로 오인되면 안 됨
+    롯데카드_현대백화점: [
+      '롯데카드', '[Web발신]', '현대백화점 목동점', '52,000원 승인', '강*준 로카 스페셜SE 1*2*', '일시불 11/23 18:10', '누적 63,980원',
+    ].join('\n'),
+    // ⚠️ 아래는 가정한 형태(실제 원문 미확인)
+    롯데카드_취소: ['[Web발신]', '주식회사 웹빙신선시흥', '11,980원 취소', '강*준 로카 스페셜SE 1*2*', '일시불 11/23 17:50'].join('\n'),
+    롯데카드_광고: '(광고) 롯데카드 11월 이벤트 10,000원 승인 시 캐시백',
     // 가맹점이 "삼성전자"인 현대카드 알림은 삼성카드로 오인되면 안 됨
     현대카드_삼성전자가맹점: [
       '삼성전자(주)', '5,900원 · 일반승인', '강태준 님, 현대 MX Black 승인 일시불, 10/8 13:00', '누적5,093,523원',
@@ -720,7 +787,8 @@ function _testParser() {
                   현대카드_대한항공120_국내: 'hyundai', 현대카드_대한항공120_해외: 'hyundai',
                   현대카드_해외_실제원문: 'hyundai', 현대카드_해외_실제원문_EUR: 'hyundai', 현대카드_해외사용확인알림: 'hyundai',
                   삼성카드_승인_실제: 'samsung', 삼성카드_알림_겹침: 'samsung', 삼성카드_승인_한줄: 'samsung', 삼성카드_승인_여러줄: 'samsung', 삼성카드_취소: 'samsung',
-                  삼성카드_해외: 'samsung', 삼성카드_광고: 'samsung', 현대카드_삼성전자가맹점: 'hyundai' };
+                  삼성카드_해외: 'samsung', 삼성카드_광고: 'samsung', 현대카드_삼성전자가맹점: 'hyundai',
+                  롯데카드_승인_실제: 'lotte', 롯데카드_알림_겹침: 'lotte', 롯데카드_취소: 'lotte', 롯데카드_광고: 'lotte' };
   Object.keys(cases).forEach(k => {
     Logger.log(k + ' → ' + JSON.stringify(parseAlert(cases[k], new Date(2026, 8, 1), hints[k])));
   });
