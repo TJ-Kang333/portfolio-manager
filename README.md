@@ -22,8 +22,9 @@
   넣고 웹앱으로 배포. 그 URL 을 앱의 "Sheets 연동" 화면에 입력하면 연결됨.
 - **백엔드 자동 반영**: `main` 에 `apps-script/` 변경이 머지되면 GitHub Actions
   (`.github/workflows/apps-script-deploy.yml`)가 clasp 로 Apps Script 에 코드를 올리고 기존 웹앱 배포를
-  새 버전으로 업데이트(URL 그대로). 반영 전에 Apps Script 의 현재 코드를 저장소의 이전 버전과 비교해서,
-  편집기에서 직접 고친 내용이 있으면 덮어쓰지 않고 멈춤. 처음 설정은 아래 참고.
+  새 버전으로 업데이트(URL 그대로). 반영 전에 Apps Script 의 현재 코드를 저장소 기록과 비교해서, 어느 버전과도
+  다르면(= 편집기에서 직접 고침) 덮어쓰지 않고 멈춤. 매니페스트(`apps-script/appsscript.json`)는 저장소 것과
+  같아야 진행. 처음 설정은 아래 참고.
 
 ## Apps Script 자동 반영 — 처음 한 번 설정
 
@@ -40,8 +41,7 @@
    - `APPS_SCRIPT_ID`: Apps Script 편집기 → 프로젝트 설정(톱니바퀴) → 스크립트 ID
    - `APPS_SCRIPT_DEPLOYMENT_ID`: 편집기 → 배포 → 배포 관리 → 지금 쓰는 웹앱의 배포 ID
 4. Actions 탭 → **Apps Script 배포** → Run workflow → `check` 로 실행해서 Apps Script 의 현재 코드와
-   저장소를 비교. 처음엔 저장소에 `appsscript.json`(매니페스트)이 없어서 차이가 나오는데, 로그에 찍힌
-   매니페스트를 `apps-script/appsscript.json` 으로 추가하고 다른 차이가 없으면 설정 끝.
+   저장소를 비교(통과하면 설정 끝). 매니페스트를 편집기에서 바꿨다면 `apps-script/appsscript.json` 도 같이 맞출 것.
 
 Secrets 가 없으면 워크플로는 아무것도 하지 않고 넘어감(예전처럼 직접 붙여넣기).
 `.clasprc.json` 은 Google 계정 권한이 담긴 인증 정보이므로 Secrets 외의 곳(저장소·채팅 등)에 올리지 말 것.
