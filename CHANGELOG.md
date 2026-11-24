@@ -1,5 +1,14 @@
 # 변경 이력
 
+## Apps Script 자동 반영 (GitHub Actions + clasp) (2026-11-24)
+
+- 지금까지는 `apps-script/*.gs` 를 고치면 Apps Script 편집기에 직접 붙여넣고 재배포해야 했음. 이제 `main` 에 머지되면
+  GitHub Actions 가 clasp 로 코드를 올리고 **기존 웹앱 배포를 새 버전으로 업데이트**(웹앱 URL 그대로 → MacroDroid·앱 설정 변경 불필요).
+- 안전장치: 반영 전에 Apps Script 의 현재 코드를 내려받아 저장소의 머지 전 버전과 비교 — 편집기에서 직접 고친 내용이 있으면
+  덮어쓰지 않고 멈추고 차이를 로그에 보여줌. 수동 실행(check / deploy / force-deploy)도 가능.
+- 처음 한 번 설정 필요(Apps Script API 켜기, PC 에서 `clasp login`, 저장소 Secrets 3개, check 실행 후 `appsscript.json` 추가) —
+  README 「Apps Script 자동 반영 — 처음 한 번 설정」. Secrets 가 없으면 아무것도 안 하고 넘어감.
+
 ## 롯데카드 승인/취소 문자 인식 (2026-11-23)
 
 - 롯데카드 문자(실제 원문 2026-11-23 확인)를 가계부 지출로 인식: `[Web발신] 주식회사 웹빙신선시흥 / 11,980원 승인 /
