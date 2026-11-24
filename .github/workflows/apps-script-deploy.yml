@@ -2,8 +2,10 @@
 #  main 에 apps-script/ 변경이 머지되면 → Apps Script 프로젝트에 코드 반영(clasp push)
 #  → 기존 웹앱 배포를 새 버전으로 업데이트(URL 그대로, MacroDroid·앱 설정 변경 불필요).
 #
-#  안전장치: 반영 전에 Apps Script 에 실제로 올라가 있는 코드를 내려받아(clasp pull)
-#  저장소의 "이전" 버전과 비교한다. 편집기에서 직접 고친 내용이 있으면 덮어쓰지 않고 멈춘다.
+#  안전장치: 반영 전에 Apps Script 에 실제로 올라가 있는 코드를 내려받아(clasp pull) 저장소 기록과 비교한다.
+#   - 코드가 저장소의 예전 어느 버전과든 같으면 반영이 늦었을 뿐 → 진행.
+#   - 어느 버전과도 다르면 편집기에서 직접 고친 것 → 덮어쓰지 않고 멈춘다.
+#   - 매니페스트(appsscript.json)는 지금 저장소 것과 같아야 진행(웹앱 접근 설정 등이 바뀌지 않도록).
 #
 #  필요한 저장소 Secrets (Settings → Secrets and variables → Actions):
 #   CLASPRC_JSON               PC 에서 `clasp login` 후 생긴 .clasprc.json 내용 전체
@@ -43,7 +45,6 @@ jobs:
       CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
       SCRIPT_ID: ${{ secrets.APPS_SCRIPT_ID }}
       DEPLOYMENT_ID: ${{ secrets.APPS_SCRIPT_DEPLOYMENT_ID }}
-      BEFORE_SHA: ${{ github.event.before }}
     steps:
       - name: 설정 확인
         id: cfg
@@ -86,23 +87,44 @@ jobs:
       - name: 비교 (편집기에서 직접 고친 내용이 있는지)
         if: steps.cfg.outputs.ready == 'true' && env.MODE != 'force-deploy'
         run: |
-          # 비교 기준: 머지로 실행되면 머지 전 main, 수동 실행이면 지금 main
-          BASE="$GITHUB_SHA"
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
-            if [ -n "$BEFORE_SHA" ] && ! echo "$BEFORE_SHA" | grep -qE '^0+$'; then BASE="$BEFORE_SHA"; else BASE="$GITHUB_SHA~1"; fi
-          fi
-          echo "비교 기준 커밋: $BASE"
-          mkdir -p "$RUNNER_TEMP/base"
-          git archive "$BASE" apps-script | tar -x -C "$RUNNER_TEMP/base"
-          if [ ! -f "$RUNNER_TEMP/base/apps-script/appsscript.json" ]; then
-            echo "::notice::저장소에 appsscript.json 이 아직 없어요. 아래가 Apps Script 의 매니페스트예요 — 저장소에 추가해야 자동 반영이 됩니다."
-            cat "$RUNNER_TEMP/remote/appsscript.json"; echo
-          fi
-          if diff -r -u --strip-trailing-cr -B "$RUNNER_TEMP/base/apps-script" "$RUNNER_TEMP/remote" > "$RUNNER_TEMP/diff.txt"; then
-            echo "✓ Apps Script 의 코드가 저장소($BASE)와 같아요."
+          R="$RUNNER_TEMP/remote"
+          # Apps Script 는 파일 끝 줄바꿈을 지워서 저장 → 비교 전에 양쪽 모두 끝 줄바꿈을 맞춤
+          norm() { find "$1" -type f \( -name '*.gs' -o -name '*.json' \) -exec sed -i -e '$a\' {} +; }
+          norm "$R"
+
+          # ① 코드(.gs): Apps Script 코드가 저장소의 예전 어느 버전과든 같으면 "직접 고친 게 아니라 반영이 늦은 것" → 진행.
+          #    어느 버전과도 다르면 편집기에서 직접 고친 것 → 덮어쓰지 않고 멈춤.
+          mkdir -p "$RUNNER_TEMP/r_gs"; cp "$R"/*.gs "$RUNNER_TEMP/r_gs/"
+          MATCH=""
+          for C in $(git log --format=%H -n 50 "$GITHUB_SHA" -- apps-script); do
+            D="$RUNNER_TEMP/c_$C"; mkdir -p "$D"
+            git archive "$C" apps-script | tar -x -C "$D"
+            mkdir -p "$D/gs"; cp "$D"/apps-script/*.gs "$D/gs/" 2>/dev/null || true; norm "$D/gs"
+            if diff -rq --strip-trailing-cr -B "$D/gs" "$RUNNER_TEMP/r_gs" > /dev/null; then MATCH="$C"; break; fi
+          done
+          if [ -n "$MATCH" ]; then
+            if [ "$MATCH" = "$GITHUB_SHA" ] || [ -z "$(git diff --name-only "$MATCH" "$GITHUB_SHA" -- 'apps-script/*.gs')" ]; then
+              echo "✓ Apps Script 의 코드가 지금 저장소와 같아요."
+            else
+              echo "✓ Apps Script 의 코드는 저장소의 예전 버전(${MATCH::7})과 같아요 — 직접 고친 내용 없음, 새 코드로 반영 가능."
+            fi
           else
-            echo "::error::Apps Script 의 코드가 저장소($BASE)와 달라요 — 편집기에서 직접 고친 내용이 있거나 아직 처음 설정 전이에요. 덮어쓰지 않고 멈춥니다. 아래 차이를 확인하세요(- 저장소 / + Apps Script)."
-            cat "$RUNNER_TEMP/diff.txt"
+            echo "::error::Apps Script 의 코드가 저장소의 어느 버전과도 달라요 — 편집기에서 직접 고친 내용이 있어서 덮어쓰지 않고 멈춥니다. 아래는 지금 저장소와의 차이예요(- 저장소 / + Apps Script). 고친 내용을 저장소에 반영하거나, 버려도 되면 force-deploy 로 실행하세요."
+            mkdir -p "$RUNNER_TEMP/h_gs"; cp apps-script/*.gs "$RUNNER_TEMP/h_gs/"; norm "$RUNNER_TEMP/h_gs"
+            diff -r -u --strip-trailing-cr -B "$RUNNER_TEMP/h_gs" "$RUNNER_TEMP/r_gs" || true
+            exit 1
+          fi
+
+          # ② 매니페스트(appsscript.json): 반영하면 저장소 것으로 덮어써지므로 지금 저장소와 같아야 함
+          if [ ! -f apps-script/appsscript.json ]; then
+            echo "::error::저장소에 apps-script/appsscript.json 이 없어요. 아래 Apps Script 매니페스트를 그대로 추가하세요."
+            cat "$R/appsscript.json"; exit 1
+          fi
+          if jq -S . apps-script/appsscript.json > "$RUNNER_TEMP/m_repo.json" && jq -S . "$R/appsscript.json" > "$RUNNER_TEMP/m_remote.json" \
+             && diff -u "$RUNNER_TEMP/m_repo.json" "$RUNNER_TEMP/m_remote.json"; then
+            echo "✓ 매니페스트(appsscript.json)도 같아요."
+          else
+            echo "::error::Apps Script 의 매니페스트가 저장소와 달라요(위 차이: - 저장소 / + Apps Script). 저장소 것을 맞춘 뒤 다시 실행하세요."
             exit 1
           fi
 
