@@ -117,7 +117,7 @@ input[type="checkbox"]{width:15px;height:15px;cursor:pointer;}
 <body>
 <div class="layout">
 <aside class="sidebar">
-  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-08 위험알림분리</div></div>
+  <div class="sidebar-logo"><span>PORT</span>FOLIO<div style="font-size:9px;font-weight:400;letter-spacing:0;color:var(--text3);margin-top:2px;white-space:nowrap;" title="이 앱 화면의 버전 — 업데이트가 반영됐는지 확인용">버전 2026-11-24 일괄작업·해외중복</div></div>
   <nav class="nav">
     <div class="nav-item active" onclick="showPage('dashboard')">
       <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="6" height="6" rx="1.5"/><rect x="9" y="1" width="6" height="6" rx="1.5"/><rect x="1" y="9" width="6" height="6" rx="1.5"/><rect x="9" y="9" width="6" height="6" rx="1.5"/></svg>
@@ -7257,7 +7257,162 @@ function onLedgerRowCheck() {
     parts.push(chip('순', net, net >= 0 ? 'var(--pos)' : 'var(--neg)'));
   }
 
-  bar.innerHTML = parts.join('');
+  bar.innerHTML = parts.join('') + `
+    <span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn-sm" onclick="bulkEditLedgerTxns()" style="color:#1D6FC4;border-color:#1D6FC4;">✏ 유형·카테고리 변경</button>
+      <button class="btn-sm" onclick="bulkTemplateLedgerTxns()" style="color:#1D9E75;border-color:#1D9E75;">⏱ 정기 템플릿 등록</button>
+      <button class="btn-sm btn-danger" onclick="bulkDeleteLedgerTxns()">🗑 삭제</button>
+    </span>`;
+}
+
+// ── 거래 일괄 작업 (체크한 항목) ─────────────────────────────
+function _checkedLedgerTxns() {
+  const ids = new Set([...document.querySelectorAll('.l-txn-chk:checked')].map(c => c.getAttribute('data-id')));
+  return ledger().txns.filter(t => ids.has(t.id));
+}
+function _afterBulkLedger() {
+  save(); populateLedgerTxnForm(); renderLedgerTxnList(); renderLedgerAccounts();
+  try { renderReviewNeeded(); } catch (e) {}
+}
+
+function bulkDeleteLedgerTxns() {
+  const sel = _checkedLedgerTxns(); if (!sel.length) return;
+  const sum = sel.reduce((s, t) => s + (t.amount || 0), 0);
+  if (!confirm(`선택한 거래 ${sel.length}건(합계 ${sum.toLocaleString()}원)을 삭제할까요?\n되돌릴 수 없어요.`)) return;
+  let n = 0;
+  sel.forEach(t => { if (_removeLedgerTxn(t.id)) n++; });
+  _afterBulkLedger();
+  alert(`✓ ${n}건 삭제했어요.`);
+}
+
+// 거래 하나의 유형·카테고리 바꾸기 — 거래 수정(saveEditedTxn)과 같은 방식으로 잔고·투자 이체 입금을 역산/재반영
+function _setLedgerTxnTypeCat(t, newType, newCatId) {
+  const ld = ledger();
+  const isOut = ty => ty === 'expense' || ty === 'personal';
+  const oldCat = ld.categories.find(c => c.id === t.catId);
+  if (oldCat?.name === '투자 이체' && t.type === 'expense') removePfDeposit(t.date.slice(0, 7), null, t.amount);
+  if (isOut(t.type) !== isOut(newType)) {
+    updateLedgerAcctBalance(t.acctId, isOut(t.type) ? t.amount : -t.amount);   // 예전 반영 되돌리기
+    updateLedgerAcctBalance(t.acctId, isOut(newType) ? -t.amount : t.amount);  // 새로 반영
+  }
+  t.type = newType;
+  if (newType === 'personal') delete t.catId; else t.catId = newCatId || null;
+  if (newType !== 'income') delete t.settleIn;
+  if (newType !== 'expense') delete t.settleOut;
+  const newCat = ld.categories.find(c => c.id === t.catId);
+  if (newCat?.name === '투자 이체' && newType === 'expense') applyPfDeposit(t.date.slice(0, 7), null, t.amount);
+}
+
+function bulkEditLedgerTxns() {
+  const sel = _checkedLedgerTxns(); if (!sel.length) return;
+  const ld = ledger();
+  const types = [...new Set(sel.map(t => t.type))];
+  const curType = types.length === 1 ? types[0] : '';
+  const overlay = document.createElement('div');
+  overlay.id = '_bulkEditOverlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;';
+  overlay.onclick = e => { if (e.target === overlay) overlay.remove(); };
+  overlay.innerHTML = `
+    <div style="background:var(--surface);border-radius:var(--radius-lg);padding:20px 24px;max-width:420px;width:100%;" onclick="event.stopPropagation()">
+      <div style="font-size:16px;font-weight:600;margin-bottom:4px;">선택한 ${sel.length}건 일괄 변경</div>
+      <div style="font-size:11px;color:var(--text3);margin-bottom:14px;">이체·잔액조정 거래는 건너뛰어요. 잔액은 거래 수정과 같은 방식으로 다시 맞춰요.</div>
+      <div class="fg" style="margin-bottom:10px;"><label>유형</label>
+        <select id="bulk-type" onchange="_bulkEditFillCats()" style="width:100%;">
+          <option value="">변경 안 함${curType ? '' : ' (유형이 섞여 있음)'}</option>
+          <option value="expense">지출</option><option value="income">수입</option><option value="personal">개인용도</option>
+        </select></div>
+      <div class="fg" style="margin-bottom:6px;"><label>카테고리</label>
+        <select id="bulk-cat" style="width:100%;"></select></div>
+      <div id="bulk-note" style="font-size:11px;color:var(--text3);min-height:16px;"></div>
+      <div style="margin-top:16px;display:flex;gap:8px;justify-content:flex-end;">
+        <button class="btn" onclick="document.getElementById('_bulkEditOverlay').remove()">취소</button>
+        <button class="btn btn-primary" onclick="applyBulkEditLedgerTxns()">변경</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  window._bulkEditCurType = curType;
+  _bulkEditFillCats();
+}
+function _bulkEditFillCats() {
+  const ld = ledger();
+  const newType = document.getElementById('bulk-type')?.value || '';
+  const effType = newType || window._bulkEditCurType || '';
+  const catSel = document.getElementById('bulk-cat'); if (!catSel) return;
+  const note = document.getElementById('bulk-note');
+  if (effType === 'personal') {
+    catSel.innerHTML = '<option value="">(개인용도는 카테고리 없음)</option>'; catSel.disabled = true;
+    if (note) note.textContent = '';
+    return;
+  }
+  catSel.disabled = false;
+  const opt = c => `<option value="${c.id}">${c.name}</option>`;
+  if (effType === 'expense' || effType === 'income') {
+    catSel.innerHTML = `<option value="">변경 안 함</option>` + ld.categories.filter(c => c.type === effType).map(opt).join('');
+    if (note) note.textContent = '';
+  } else {
+    catSel.innerHTML = `<option value="">변경 안 함</option>`
+      + `<optgroup label="지출">${ld.categories.filter(c => c.type === 'expense').map(opt).join('')}</optgroup>`
+      + `<optgroup label="수입">${ld.categories.filter(c => c.type === 'income').map(opt).join('')}</optgroup>`;
+    if (note) note.textContent = '유형이 섞여 있어서, 고른 카테고리와 유형이 같은 거래만 바뀌어요.';
+  }
+}
+function applyBulkEditLedgerTxns() {
+  const sel = _checkedLedgerTxns(); if (!sel.length) return;
+  const ld = ledger();
+  const newType = document.getElementById('bulk-type')?.value || '';
+  const newCatId = document.getElementById('bulk-cat')?.value || '';
+  if (!newType && !newCatId) { alert('바꿀 유형이나 카테고리를 고르세요.'); return; }
+  const cat = newCatId ? ld.categories.find(c => c.id === newCatId) : null;
+  let changed = 0, skipped = 0;
+  sel.forEach(t => {
+    if (!['expense', 'income', 'personal'].includes(t.type)) { skipped++; return; }
+    const ty = newType || t.type;
+    let catId = t.catId;
+    if (ty === 'personal') catId = null;
+    else if (cat) { if (cat.type !== ty) { skipped++; return; } catId = cat.id; }
+    else if (ty !== t.type) {                              // 유형만 바뀌면 기존 카테고리가 새 유형에 맞을 때만 유지
+      const oc = ld.categories.find(c => c.id === t.catId);
+      catId = oc && oc.type === ty ? oc.id : null;
+    }
+    if (ty === t.type && (catId || null) === (t.catId || null)) return;
+    _setLedgerTxnTypeCat(t, ty, catId);
+    changed++;
+  });
+  migratePersonalTxns();   // "개인 용도" 카테고리로 바꿨으면 유형도 개인용도로
+  document.getElementById('_bulkEditOverlay')?.remove();
+  _afterBulkLedger();
+  alert(`✓ ${changed}건 변경했어요.` + (skipped ? `\n(이체·잔액조정이거나 카테고리와 유형이 안 맞는 ${skipped}건은 건너뜀)` : ''));
+}
+
+// 선택한 거래를 정기 거래 템플릿으로 (거래일의 "일"이 매월 적용일)
+function bulkTemplateLedgerTxns() {
+  const sel = _checkedLedgerTxns(); if (!sel.length) return;
+  const ld = ledger();
+  if (!ld.templates) ld.templates = [];
+  const ok = [], skip = [];
+  sel.forEach(t => {
+    if (!['expense', 'income', 'transfer'].includes(t.type) || (t.type === 'transfer' && !t.toAcctId)) { skip.push(t); return; }
+    const dup = ld.templates.some(x => x.type === t.type && x.amount === t.amount && x.acctId === t.acctId
+      && (x.toAcctId || null) === (t.toAcctId || null) && (x.memo || '') === (t.memo || ''));
+    if (dup) { skip.push(t); return; }
+    ok.push(t);
+  });
+  if (!ok.length) { alert('등록할 수 있는 거래가 없어요.\n(이미 같은 템플릿이 있거나, 개인용도·잔액조정·투자계좌 이체는 템플릿으로 만들 수 없어요)'); return; }
+  const catName = id => ld.categories.find(c => c.id === id)?.name || '';
+  const nameOf = t => (t.memo || '').trim() || catName(t.catId) || (t.type === 'transfer' ? '이체' : '정기 거래');
+  const msg = `정기 거래 템플릿 ${ok.length}건을 등록할까요? (매월 거래일과 같은 날)\n\n`
+    + ok.map(t => `  · ${nameOf(t)}  ${t.amount.toLocaleString()}원 (매월 ${parseInt(t.date.slice(8), 10)}일)`).join('\n')
+    + (skip.length ? `\n\n(이미 있거나 템플릿으로 못 만드는 ${skip.length}건은 건너뜀)` : '');
+  if (!confirm(msg)) return;
+  const stamp = Date.now();
+  ok.forEach((t, i) => ld.templates.push({
+    id: 'ltmpl_' + stamp + '_' + i, name: nameOf(t), type: t.type, catId: t.type === 'transfer' ? null : (t.catId || null),
+    amount: t.amount, acctId: t.acctId, toAcctId: t.toAcctId || null,
+    day: Math.min(Math.max(parseInt(t.date.slice(8), 10) || 1, 1), 31), memo: t.memo || '', active: true,
+  }));
+  save();
+  try { renderTemplates(); } catch (e) {}
+  alert(`✓ 정기 거래 템플릿 ${ok.length}건을 등록했어요. 가계부 설정의 「⏱ 정기 거래 템플릿」에서 확인할 수 있어요.`);
 }
 
 function toggleAllLedgerRows(checked) {
@@ -7504,8 +7659,13 @@ function renderLedgerTxnList() {
 
 function deleteLedgerTxn(id) {
   if (!confirm('이 거래를 삭제할까요?')) return;
+  if (!_removeLedgerTxn(id)) return;
+  save(); renderLedgerTxnList(); renderLedgerAccounts();
+}
+// 거래 하나 삭제 — 잔고·투자 입금 역산까지 (저장·화면 갱신은 부르는 쪽에서). 단건/일괄 삭제 공용
+function _removeLedgerTxn(id) {
   const ld = ledger();
-  const t = ld.txns.find(x=>x.id===id); if(!t) return;
+  const t = ld.txns.find(x=>x.id===id); if(!t) return false;
 
   // 잔고 역산
   if (t.type === 'adjust') {
@@ -7532,7 +7692,7 @@ function deleteLedgerTxn(id) {
     removePfDeposit(t.date.slice(0,7), null, t.amount);
   }
   ld.txns = ld.txns.filter(x=>x.id!==id);
-  save(); renderLedgerTxnList(); renderLedgerAccounts();
+  return true;
 }
 
 // ── 거래 수정 모달 ────────────────────────────────────────────
@@ -8512,6 +8672,18 @@ function _stmtSim(a, b) {
   return false;
 }
 
+// _stmtSim 보다 엄격한 버전(겹치는 글자 n개 이상) — "com" 같은 흔한 3글자로 엉뚱한 해외 가맹점끼리 잇지 않도록
+function _stmtSimN(a, b, n) {
+  const x = _stmtNorm(a), y = _stmtNorm(b);
+  if (x.length < n || y.length < n) return false;
+  if (x.includes(y) || y.includes(x)) return true;
+  const [sh, lo] = x.length <= y.length ? [x, y] : [y, x];
+  for (let i = 0; i + n <= sh.length; i++) if (lo.includes(sh.slice(i, i + n))) return true;
+  return false;
+}
+// 아직 원화로 안 바뀐 해외결제(알림에서 외화로만 들어와 0원)
+const _stmtIsPendingFx = p => !p.used && p.t.amount === 0 && p.t.type !== 'income' && (!!p.fx || /환전\s*전/.test(p.t.memo || ''));
+
 function populateStmtAcct() {
   const sel = document.getElementById('l-stmt-acct'); if (!sel) return;
   const cards = ledger().accounts.filter(a => a.type === 'card');
@@ -8614,6 +8786,28 @@ function stmtReconcile(parsed, accId) {
     leftover.push(r);                                                              // 가계부에 없는 해외결제
   });
 
+  // 2.5) 그래도 짝이 없는 명세서 줄 ↔ 아직 0원인 해외결제. 외화 표기·금액이 조금 달라 위에서 못 맞춘 경우
+  //      (예전엔 새 거래로 추가돼서 0원 거래가 그대로 남아 중복이 됐음) — 가맹점 이름이 비슷하거나,
+  //      같은 통화의 0원 거래가 그 근처에 하나뿐이면 같은 거래로 보고 그 0원 거래에 원화 금액을 채운다.
+  {
+    const still = [];
+    leftover.forEach(r => {
+      if (r.amt <= 0) { still.push(r); return; }
+      const cands = pool.filter(p => _stmtIsPendingFx(p) && _stmtDays(p.t.date, r.date) <= 10);
+      const bySim = cands.filter(p => _stmtSimN(_stmtBaseName(p.t.memo), r.name, 4));
+      const byCur = r.foreign ? cands.filter(p => p.fx && p.fx.cur === r.foreign.cur) : [];
+      const from = bySim.length ? bySim : (byCur.length === 1 ? byCur : []);
+      if (!from.length) { still.push(r); return; }
+      const p = from.slice().sort((a, b) => _stmtDays(a.t.date, r.date) - _stmtDays(b.t.date, r.date))[0];
+      take(p);
+      const fxTxt = r.foreign ? `${r.foreign.cur} ${r.foreign.amt.toFixed(2)}` : '원화 청구';
+      plan.fills.push({ id: p.t.id, krw: r.amt, row: r, oldMemo: p.t.memo,
+        newMemo: `${_stmtBaseName(p.t.memo)} (${fxTxt} · 명세서)`,
+        note: bySim.length ? '가맹점 이름이 비슷해서 연결' : `근처의 ${r.foreign.cur} 0원 거래가 하나뿐이라 연결` });
+    });
+    leftover.length = 0; still.forEach(r => leftover.push(r));
+  }
+
   // 3) 짝이 없는 명세서 줄 → 추가 후보 (취소 쌍은 서로 상쇄되므로 건너뜀)
   const pos = leftover.filter(r => r.amt > 0), neg = leftover.filter(r => r.amt < 0), pairedNeg = new Set();
   pos.forEach(r => {
@@ -8629,6 +8823,15 @@ function stmtReconcile(parsed, accId) {
 
   // 4) 명세서 기간 안에 있는데 명세서에는 없는 가계부 거래 (참고)
   plan.extras = pool.filter(p => !p.used && p.t.amount > 0 && p.t.date >= parsed.start && p.t.date <= parsed.end).map(p => p.t);
+
+  // 5) 그래도 남은 0원 해외결제 — 이미 원화로 들어온 같은 거래(예전 대조에서 새로 추가됐거나 직접 입력)가 있으면
+  //    중복이므로 삭제 후보(기본 체크). 없으면 다음 달 명세서에 나올 수 있어서 기본은 남겨둔다.
+  plan.zeros = pool.filter(p => _stmtIsPendingFx(p) && p.t.date <= parsed.end).map(p => {
+    const dup = pool.find(q => q !== p && q.t.amount > 0 && q.t.type !== 'income' && _stmtDays(q.t.date, p.t.date) <= 10 && (
+      (q.fx && p.fx && q.fx.cur === p.fx.cur && Math.abs(q.fx.amt - p.fx.amt) < 0.005) ||
+      _stmtSimN(_stmtBaseName(q.t.memo), _stmtBaseName(p.t.memo), 4)));
+    return { t: p.t, dup: dup ? dup.t : null };
+  });
   return plan;
 }
 
@@ -8659,7 +8862,8 @@ function renderStatementPlan() {
   const addNet = p.adds.reduce((s, a) => s + (a.type === 'income' ? -a.amount : a.amount), 0);
   const startDay = parseInt(ps.start.slice(8), 10);
   const periodDiff = acc && cardBillStartDay(acc) !== startDay;
-  const nothing = !p.fills.length && !p.adds.length;
+  const zeros = p.zeros || [];
+  const nothing = !p.fills.length && !p.adds.length && !zeros.length;
   const sec = (title, sub, body) => `<div style="margin:12px 0 4px;font-size:13px;font-weight:600;">${title} <span style="font-weight:400;font-size:11px;color:var(--text3);">${sub}</span></div>${body}`;
   const tbl = (head, rows) => `<div style="overflow-x:auto;"><table style="width:100%;min-width:520px;font-size:12px;"><thead><tr>${head.map(h => `<th${h[1] ? ' class="r"' : ''}>${h[0]}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
 
@@ -8667,7 +8871,7 @@ function renderStatementPlan() {
     <div style="padding:10px 12px;background:var(--surface2);border-radius:var(--radius);font-size:12px;line-height:1.7;">
       <b>${acc ? acc.name : ''}</b> · 이용기간 <b>${ps.start} ~ ${ps.end}</b> · 명세서 ${ps.rows.length}건<br>
       명세서 이용금액 합 <b>${won(ps.total)}</b>${ps.discount != null ? ` · 청구할인 <b>${won(ps.discount)}</b>` : ''}${ps.bill != null ? ` · 청구액 <b>${won(ps.bill)}</b>` : ''}<br>
-      가계부와 짝이 맞은 거래 <b>${p.matched}건</b> · 채울 해외결제 <b>${p.fills.length}건</b>(${won(fillSum)}) · 추가할 거래 <b>${p.adds.length}건</b>(순 ${won(addNet)})${p.skips.length ? ` · 취소 쌍 건너뜀 ${p.skips.length}쌍` : ''}
+      가계부와 짝이 맞은 거래 <b>${p.matched}건</b> · 채울 해외결제 <b>${p.fills.length}건</b>(${won(fillSum)}) · 추가할 거래 <b>${p.adds.length}건</b>(순 ${won(addNet)})${zeros.length ? ` · 남은 0원 해외결제 <b>${zeros.length}건</b>(중복 ${zeros.filter(z => z.dup).length}건)` : ''}${p.skips.length ? ` · 취소 쌍 건너뜀 ${p.skips.length}쌍` : ''}
     </div>
     ${nothing ? `<div class="empty" style="padding:14px 0;">가계부와 명세서가 이미 맞아요 🎉 (더 채우거나 추가할 항목이 없어요)</div>` : ''}
     ${p.fills.length ? sec('해외결제 원화 금액 채우기', '알림에서 외화로만 들어와 0원이던 거래에 명세서의 원화 청구 금액을 넣어요',
@@ -8681,6 +8885,11 @@ function renderStatementPlan() {
         <td style="font-family:var(--mono);white-space:nowrap;">${a.date}</td><td>${a.name}</td>
         <td><select id="stmt-cat-${i}" style="font-size:11px;padding:2px 4px;">${catOpts(a.type, a.catId)}</select></td>
         <td class="r" style="font-family:var(--mono);color:${a.type === 'income' ? 'var(--pos)' : 'inherit'};">${a.type === 'income' ? '+' : ''}${won(a.amount)}</td></tr>`).join(''))) : ''}
+    ${zeros.length ? sec('남은 0원 해외결제', '원화 금액으로 바뀌지 않은 거래예요. 이미 원화로 들어온 같은 거래가 있으면 중복이라 삭제에 체크해 뒀어요',
+      tbl([['삭제', 0], ['날짜', 0], ['0원 거래', 0], ['판단', 0]], zeros.map((z, i) => `<tr>
+        <td><input type="checkbox" id="stmt-zero-${i}" ${z.dup ? 'checked' : ''} style="width:15px;height:15px;"></td>
+        <td style="font-family:var(--mono);white-space:nowrap;">${z.t.date}</td><td>${z.t.memo || '-'}</td>
+        <td style="font-size:11px;color:${z.dup ? 'var(--neg)' : 'var(--text3)'};">${z.dup ? `중복 — 원화 거래 있음: ${z.dup.date} ${z.dup.memo || ''} ${won(z.dup.amount)}` : '명세서에 없음 — 다음 달 명세서에 나올 수 있어 남겨둠'}</td></tr>`).join(''))) : ''}
     ${p.skips.length ? `<div style="margin-top:10px;font-size:11px;color:var(--text3);">취소 쌍(결제와 취소가 모두 가계부에 없어 서로 상쇄 — 건너뜀): ${p.skips.map(s => `${s.pos.name} ${won(s.pos.amt)}`).join(', ')}</div>` : ''}
     ${p.extras.length ? `<details style="margin-top:10px;"><summary style="font-size:11px;color:var(--text3);cursor:pointer;">가계부에만 있고 명세서에 없는 거래 ${p.extras.length}건 (참고 — 다음 달 명세서에 나오거나 다른 카드/개인용도일 수 있어요)</summary>
       <div style="font-size:11px;color:var(--text2);margin-top:4px;">${p.extras.slice(0, 40).map(t => `${t.date} ${t.memo || '-'} ${won(t.amount)}`).join('<br>')}</div></details>` : ''}
@@ -8708,6 +8917,13 @@ function applyStatementPlan() {
       amount: a.amount, memo: a.name, imported: true, fromStatement: true });
     added++;
   });
+  let removed = 0;
+  (p.zeros || []).forEach((z, i) => {
+    if (!document.getElementById('stmt-zero-' + i)?.checked) return;
+    const before = ld.txns.length;
+    ld.txns = ld.txns.filter(x => x.id !== z.t.id);   // 0원이라 잔액·집계 영향 없음
+    if (ld.txns.length < before) removed++;
+  });
   if (document.getElementById('stmt-setperiod')?.checked) {
     const acc = ld.accounts.find(a => a.id === p.accId); if (acc) acc.billStartDay = parseInt(p.parsed.start.slice(8), 10);
   }
@@ -8715,7 +8931,7 @@ function applyStatementPlan() {
   save();
   _stmt = null;
   const box = document.getElementById('l-stmt-result');
-  if (box) box.innerHTML = `<div style="padding:12px;background:var(--pos-bg);border-radius:var(--radius);font-size:13px;">✓ 해외결제 <b>${filled}건</b>의 원화 금액을 채우고, 거래 <b>${added}건</b>을 추가했어요. 요약 탭의 "카드 청구 대조"에서 차액(혜택)을 확인해보세요.</div>`;
+  if (box) box.innerHTML = `<div style="padding:12px;background:var(--pos-bg);border-radius:var(--radius);font-size:13px;">✓ 해외결제 <b>${filled}건</b>의 원화 금액을 채우고, 거래 <b>${added}건</b>을 추가했어요.${removed ? ` 중복된 0원 해외결제 <b>${removed}건</b>은 삭제했어요.` : ''} 요약 탭의 "카드 청구 대조"에서 차액(혜택)을 확인해보세요.</div>`;
   try { renderLedgerTxnList(); renderBillCheckCard(); renderReviewNeeded(); renderLedgerAccounts(); } catch (e) {}
 }
 
